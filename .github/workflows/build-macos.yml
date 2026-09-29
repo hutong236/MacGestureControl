@@ -1,0 +1,43 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build Release app
+        run: |
+          xcodebuild \
+            -project GestureControl.xcodeproj \
+            -scheme GestureControl \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            clean build
+
+      - name: Package app
+        run: |
+          mkdir -p dist
+          cp -R "$RUNNER_TEMP/DerivedData/Build/Products/Release/GestureControl.app" dist/GestureControl.app
+          ditto -c -k --sequesterRsrc --keepParent dist/GestureControl.app dist/GestureControl-macOS-unsigned.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GestureControl-macOS-unsigned
+          path: dist/GestureControl-macOS-unsigned.zip
+          if-no-files-found: error

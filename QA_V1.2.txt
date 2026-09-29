@@ -1,0 +1,61 @@
+GestureControl V1.2.0 QA
+========================
+
+Environment note
+----------------
+The assistant execution environment is Linux, so a real macOS SDK/Xcode/AVFoundation runtime build cannot be performed here.
+All checks below are source-level Swift parsing, platform-neutral core typechecking, deterministic smoke tests, plist/project/script validation, and source inspection. Final xcodebuild + camera behavior must be validated on the user's MacBook Pro.
+
+Static checks
+-------------
+PASS  Swift parse: all GestureControl/*.swift
+PASS  TrackpadGestureEngine + DirectionalGestureEngine platform-neutral typecheck
+PASS  build_release.sh bash -n
+PASS  install_local.sh bash -n
+PASS  Info.plist parse
+PASS  CFBundleShortVersionString = 1.2.0
+PASS  CFBundleVersion = 5
+PASS  MARKETING_VERSION = 1.2.0
+PASS  CURRENT_PROJECT_VERSION = 5
+
+Regression smoke suites
+-----------------------
+PASS  directional gesture: left/right/up/down
+PASS  custom static gesture stability + rearm
+PASS  V0.x trackpad motion suite
+PASS  V0.8 motion state suite
+PASS  V0.9 latency + scroll phase suite
+PASS  V1.0 continuity suite
+PASS  V1.1 recovery fusion + semantic hysteresis suite
+PASS  V1.1.1 zoom/scroll arbitration suite
+PASS  V1.1.2 scroll retraction suite
+
+V1.2 realtime intent smoke suite
+--------------------------------
+PASS  endpoint pause does not rearm return path
+PASS  imperfect return path with lateral error cannot generate reverse scroll
+PASS  near-origin neutral pause rearms a deliberate new stroke
+PASS  mid-return pause cannot accidentally rearm
+PASS  direction latch is symmetric
+PASS  two-hand identity survives Vision result ordering changes
+PASS  bimanual clutch rebases without release jump
+
+Realtime pipeline source checks
+-------------------------------
+PASS  no secondary 1/30 software throttle in AVCapture delegate
+PASS  latest-frame-wins mailbox retained
+PASS  capture arrival timestamp travels with pending frame
+PASS  per-frame autoreleasepool in long-lived Vision drain loop
+PASS  420f YUV preferred when available; BGRA fallback retained
+PASS  60FPS capture requested only when active camera format advertises support
+PASS  two-hand Vision mode is opt-in; default maximumHandCount remains 1
+PASS  CG accessibility preflight removed from 120Hz pointer/scroll hot path
+PASS  physical pointer takeover probe reduced from 120Hz to ~16Hz
+PASS  small 120Hz pointer/scroll deltas are preserved/accumulated
+
+Final real-Mac validation needed
+--------------------------------
+1. ./build_release.sh must complete with the user's Xcode/macOS SDK.
+2. Verify camera output accepts the selected YUV format on the specific MacBook Pro (code falls back to BGRA if unsupported).
+3. Record UI telemetry during use: Vision FPS, end-to-end processing latency, stability, continuity, dropped observations, prediction hold.
+4. Compare one-hand default mode vs optional two-hand assist; two-hand detection intentionally costs more Vision compute.

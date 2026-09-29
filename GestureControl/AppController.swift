@@ -144,6 +144,9 @@ final class AppController: ObservableObject {
     private let trackpad = TrackpadController()
     private let defaults = UserDefaults.standard
     private var lastUIUpdate: TimeInterval = 0
+    /// Monotonic intent token. Camera permission callbacks are asynchronous and must not revive
+    /// a run that the user already stopped while the prompt was in flight.
+    private var runIntentGeneration: UInt64 = 0
     private var hasRequestedAccessibilityThisLaunch = false
     private var activationObserver: NSObjectProtocol?
 
@@ -309,12 +312,15 @@ final class AppController: ObservableObject {
     }
 
     func start() {
+        runIntentGeneration &+= 1
+        let generation = runIntentGeneration
         lastError = nil
         refreshPermissions()
 
         PermissionManager.requestCamera { [weak self] granted in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard generation == self.runIntentGeneration else { return }
                 self.cameraPermission = granted
 
                 guard granted else {
@@ -336,6 +342,7 @@ final class AppController: ObservableObject {
     }
 
     func stop() {
+        runIntentGeneration &+= 1
         camera.stop()
         gestureEngine.reset()
         staticGestureEngine.reset()

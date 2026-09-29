@@ -625,10 +625,12 @@ final class TrackpadGestureEngine {
         }
 
         let timer = DispatchSource.makeTimerSource(queue: motionQueue)
+        // 120Hz is 8.333ms, not 8ms (125Hz). Matching the intended cadence keeps the
+        // velocity integrator's nominal timing aligned with its tuning constants.
         timer.schedule(
-            deadline: .now() + .milliseconds(8),
-            repeating: .milliseconds(8),
-            leeway: .milliseconds(1)
+            deadline: .now() + .nanoseconds(8_333_333),
+            repeating: .nanoseconds(8_333_333),
+            leeway: .microseconds(750)
         )
         timer.setEventHandler { [weak self] in
             self?.tickMotion()

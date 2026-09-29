@@ -19,8 +19,14 @@ final class CameraManager: NSObject, ObservableObject {
     private let visionStateLock = NSLock()
     private let output = AVCaptureVideoDataOutput()
     private var configured = false
+    private var acceptingFrames = false
+    private var processingGeneration: UInt64 = 0
     private var visionProcessing = false
-    private var pendingLatestFrame: (buffer: CMSampleBuffer, capturedAt: TimeInterval)?
+    private var pendingLatestFrame: (
+        buffer: CMSampleBuffer,
+        capturedAt: TimeInterval,
+        generation: UInt64
+    )?
     // V1.2: do not add a second software frame-rate gate here. The camera is already configured
     // near 30 FPS and latest-frame-wins provides backpressure. A 1/30 wall-clock guard can
     // accidentally turn a 29.97~30 FPS source into ~15 FPS when frame timing is slightly early.
@@ -34,11 +40,22 @@ final class CameraManager: NSObject, ObservableObject {
                     self.configured = true
                 }
                 guard !self.session.isRunning else { return }
+
+                self.visionStateLock.lock()
+                self.processingGeneration &+= 1
+                self.acceptingFrames = true
+                self.pendingLatestFrame = nil
+                self.visionStateLock.unlock()
+
                 self.session.startRunning()
                 DispatchQueue.main.async {
                     self.isRunning = true
                 }
             } catch {
+                self.visionStateLock.lock()
+                self.acceptingFrames = false
+                self.pendingLatestFrame = nil
+                self.visionStateLock.unlock()
                 DispatchQueue.main.async {
                     self.errorHandler?(error.localizedDescription)
                     self.isRunning = false
@@ -50,12 +67,18 @@ final class CameraManager: NSObject, ObservableObject {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+
+            // Close the mailbox before stopping the capture session. AVCapture can still deliver a
+            // callback already queued on videoQueue; the generation check below makes that frame a no-op.
+            self.visionStateLock.lock()
+            self.acceptingFrames = false
+            self.processingGeneration &+= 1
+            self.pendingLatestFrame = nil
+            self.visionStateLock.unlock()
+
             if self.session.isRunning {
                 self.session.stopRunning()
             }
-            self.visionStateLock.lock()
-            self.pendingLatestFrame = nil
-            self.visionStateLock.unlock()
             DispatchQueue.main.async {
                 self.isRunning = false
             }
@@ -146,8 +169,13 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     /// V1.1/V1.2 latest-frame-wins：Vision 忙时不积压旧帧，只保留最新帧。
     private func enqueueLatestForVision(_ sampleBuffer: CMSampleBuffer, capturedAt: TimeInterval) {
         visionStateLock.lock()
+        guard acceptingFrames else {
+            visionStateLock.unlock()
+            return
+        }
+        let generation = processingGeneration
         if visionProcessing {
-            pendingLatestFrame = (sampleBuffer, capturedAt)
+            pendingLatestFrame = (sampleBuffer, capturedAt, generation)
             visionStateLock.unlock()
             return
         }
@@ -155,28 +183,45 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         visionStateLock.unlock()
 
         visionQueue.async { [weak self] in
-            self?.drainVision(startingWith: (sampleBuffer, capturedAt))
+            self?.drainVision(startingWith: (sampleBuffer, capturedAt, generation))
         }
     }
 
-    private func drainVision(startingWith firstFrame: (buffer: CMSampleBuffer, capturedAt: TimeInterval)) {
-        var current: (buffer: CMSampleBuffer, capturedAt: TimeInterval)? = firstFrame
+    private func drainVision(
+        startingWith firstFrame: (
+            buffer: CMSampleBuffer,
+            capturedAt: TimeInterval,
+            generation: UInt64
+        )
+    ) {
+        var current: (
+            buffer: CMSampleBuffer,
+            capturedAt: TimeInterval,
+            generation: UInt64
+        )? = firstFrame
 
         while let frame = current {
-            // The drain loop may live for minutes under a steady camera stream. Give each Vision frame
-            // its own autorelease pool so temporary Vision/Foundation objects are reclaimed every frame
-            // instead of accumulating until the loop eventually becomes idle (which can cause periodic
-            // memory-pressure pauses that feel like input discontinuities).
-            autoreleasepool {
-                frameHandler?(frame.buffer, frame.capturedAt)
+            visionStateLock.lock()
+            let shouldProcess = acceptingFrames && frame.generation == processingGeneration
+            visionStateLock.unlock()
+
+            if shouldProcess {
+                // The drain loop may live for minutes under a steady camera stream. Give each Vision
+                // frame its own autorelease pool so temporary objects are reclaimed every frame.
+                autoreleasepool {
+                    frameHandler?(frame.buffer, frame.capturedAt)
+                }
             }
 
             visionStateLock.lock()
-            if let latest = pendingLatestFrame {
+            if acceptingFrames,
+               let latest = pendingLatestFrame,
+               latest.generation == processingGeneration {
                 pendingLatestFrame = nil
                 current = latest
                 visionStateLock.unlock()
             } else {
+                pendingLatestFrame = nil
                 current = nil
                 visionProcessing = false
                 visionStateLock.unlock()

@@ -144,6 +144,12 @@ final class AppController: ObservableObject {
     private let trackpad = TrackpadController()
     private let defaults = UserDefaults.standard
     private var lastUIUpdate: TimeInterval = 0
+    /// Monotonic intent token. Camera permission callbacks are asynchronous and must not revive
+    /// a run that the user already stopped while the prompt was in flight.
+    private var runIntentGeneration: UInt64 = 0
+    private let processingStateLock = NSLock()
+    private var processingGeneration: UInt64 = 0
+    private var processingEnabled = false
     private var hasRequestedAccessibilityThisLaunch = false
     private var activationObserver: NSObjectProtocol?
 
@@ -204,9 +210,11 @@ final class AppController: ObservableObject {
         }
 
         camera.frameHandler = { [weak self] sampleBuffer, capturedAt in
-            self?.process(sampleBuffer, capturedAt: capturedAt)
+            guard let self, let generation = self.activeProcessingGeneration() else { return }
+            self.process(sampleBuffer, capturedAt: capturedAt, generation: generation)
         }
         camera.errorHandler = { [weak self] message in
+            self?.endProcessingSession()
             DispatchQueue.main.async {
                 self?.lastError = message
                 self?.isRunning = false
@@ -309,12 +317,15 @@ final class AppController: ObservableObject {
     }
 
     func start() {
+        runIntentGeneration &+= 1
+        let generation = runIntentGeneration
         lastError = nil
         refreshPermissions()
 
         PermissionManager.requestCamera { [weak self] granted in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard generation == self.runIntentGeneration else { return }
                 self.cameraPermission = granted
 
                 guard granted else {
@@ -329,6 +340,7 @@ final class AppController: ObservableObject {
                 }
                 self.refreshPermissions()
                 self.resetRecognitionState()
+                self.beginProcessingSession()
                 self.camera.start()
                 self.isRunning = true
             }
@@ -336,6 +348,8 @@ final class AppController: ObservableObject {
     }
 
     func stop() {
+        runIntentGeneration &+= 1
+        endProcessingSession()
         camera.stop()
         gestureEngine.reset()
         staticGestureEngine.reset()
@@ -453,11 +467,50 @@ final class AppController: ObservableObject {
         NSApplication.shared.terminate(nil)
     }
 
-    private func process(_ sampleBuffer: CMSampleBuffer, capturedAt: TimeInterval) {
+    @discardableResult
+    private func beginProcessingSession() -> UInt64 {
+        processingStateLock.lock()
+        processingGeneration &+= 1
+        processingEnabled = true
+        let generation = processingGeneration
+        processingStateLock.unlock()
+        return generation
+    }
+
+    private func endProcessingSession() {
+        processingStateLock.lock()
+        processingGeneration &+= 1
+        processingEnabled = false
+        processingStateLock.unlock()
+    }
+
+    private func activeProcessingGeneration() -> UInt64? {
+        processingStateLock.lock()
+        let generation = processingEnabled ? processingGeneration : nil
+        processingStateLock.unlock()
+        return generation
+    }
+
+    private func isProcessingGenerationCurrent(_ generation: UInt64) -> Bool {
+        processingStateLock.lock()
+        let current = processingEnabled && processingGeneration == generation
+        processingStateLock.unlock()
+        return current
+    }
+
+    private func process(
+        _ sampleBuffer: CMSampleBuffer,
+        capturedAt: TimeInterval,
+        generation: UInt64
+    ) {
+        guard isProcessingGenerationCurrent(generation) else { return }
+
         // V1.2: use camera-delivery time as the observation timestamp. Vision runs on another queue,
         // so using “Vision start time” would hide mailbox waiting and distort velocity when inference
         // duration varies. processingLatency now measures capture-delivery -> completed pose result.
         let poses = detector.detectHands(in: sampleBuffer)
+        guard isProcessingGenerationCurrent(generation) else { return }
+
         let processedTimestamp = ProcessInfo.processInfo.systemUptime
         let processingLatency = max(0, processedTimestamp - capturedAt)
         let timestamp = capturedAt

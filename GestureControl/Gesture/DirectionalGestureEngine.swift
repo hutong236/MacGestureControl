@@ -170,15 +170,23 @@ final class DirectionalGestureEngine {
         let minAge = configuration.minimumGestureDuration
         let maxAge = configuration.maximumGestureDuration
 
-        let candidates = samples.filter {
-            let age = current.timestamp - $0.timestamp
-            return age >= minAge && age <= maxAge
-        }
+        // Avoid building a filtered temporary array for every input sample. The history is small,
+        // but this path also serves system swipes, so a single-pass scan is cheaper and steadier.
+        var best: HandSample?
+        var bestDistanceSquared = -Double.infinity
 
-        return candidates.max { lhs, rhs in
-            let lhsDistance = hypot(current.x - lhs.x, current.y - lhs.y)
-            let rhsDistance = hypot(current.x - rhs.x, current.y - rhs.y)
-            return lhsDistance < rhsDistance
+        for sample in samples {
+            let age = current.timestamp - sample.timestamp
+            guard age >= minAge, age <= maxAge else { continue }
+
+            let dx = current.x - sample.x
+            let dy = current.y - sample.y
+            let distanceSquared = dx * dx + dy * dy
+            if distanceSquared > bestDistanceSquared {
+                bestDistanceSquared = distanceSquared
+                best = sample
+            }
         }
+        return best
     }
 }

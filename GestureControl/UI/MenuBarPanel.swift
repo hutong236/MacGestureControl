@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 struct MenuBarPanel: View {
     @ObservedObject var controller: AppController
@@ -92,11 +93,16 @@ struct MenuBarPanel: View {
                 Circle()
                     .fill(controller.handDetected ? Color.green : Color.gray.opacity(0.35))
                     .frame(width: 10, height: 10)
-                Text("V1.2.0")
+                Text(appVersionText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return "V" + (version ?? "1.2")
     }
 
     private var controlSection: some View {

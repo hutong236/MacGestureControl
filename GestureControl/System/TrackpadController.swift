@@ -72,18 +72,21 @@ final class TrackpadController {
         guard let probe = CGEvent(source: nil) else { return }
         let location = probe.location
         let type: CGEventType = down ? .leftMouseDown : .leftMouseUp
-
-        lock.lock()
-        leftButtonDown = down
-        virtualPointer = location
-        lock.unlock()
-
         guard let event = CGEvent(
             mouseEventSource: nil,
             mouseType: type,
             mouseCursorPosition: location,
             mouseButton: .left
         ) else { return }
+
+        lock.lock()
+        guard leftButtonDown != down else {
+            lock.unlock()
+            return
+        }
+        leftButtonDown = down
+        virtualPointer = location
+        lock.unlock()
 
         event.post(tap: .cghidEventTap)
     }
@@ -109,12 +112,20 @@ final class TrackpadController {
     func scroll(deltaX: Double, deltaY: Double) {
         guard deltaX.isFinite, deltaY.isFinite else { return }
 
-        lock.lock()
-        fractionalScrollX += deltaX
-        fractionalScrollY += deltaY
+        // Keep malformed/outlier upstream values from overflowing Int32 conversion. Normal gesture
+        // deltas are orders of magnitude smaller; this is a safety rail, not a sensitivity clamp.
+        let maximumEventDelta = 32_000.0
+        let safeDeltaX = min(max(deltaX, -maximumEventDelta), maximumEventDelta)
+        let safeDeltaY = min(max(deltaY, -maximumEventDelta), maximumEventDelta)
 
-        let horizontal = Int32(fractionalScrollX.rounded(.towardZero))
-        let vertical = Int32(fractionalScrollY.rounded(.towardZero))
+        lock.lock()
+        fractionalScrollX += safeDeltaX
+        fractionalScrollY += safeDeltaY
+
+        let wholeX = min(max(fractionalScrollX.rounded(.towardZero), -maximumEventDelta), maximumEventDelta)
+        let wholeY = min(max(fractionalScrollY.rounded(.towardZero), -maximumEventDelta), maximumEventDelta)
+        let horizontal = Int32(wholeX)
+        let vertical = Int32(wholeY)
         fractionalScrollX -= Double(horizontal)
         fractionalScrollY -= Double(vertical)
         lock.unlock()

@@ -60,6 +60,10 @@ final class HandPoseDetector {
     }
 
     private func makeResult(_ observation: VNHumanHandPoseObservation) -> HandPoseResult? {
+        // Pull the full joint dictionary once per observation. Repeated recognizedPoint(_:) calls
+        // add avoidable overhead in the camera/Vision hot path.
+        guard let points = try? observation.recognizedPoints(.all) else { return nil }
+
         let palmJoints: [VNHumanHandPoseObservation.JointName] = [
             .wrist,
             .indexMCP,
@@ -71,7 +75,7 @@ final class HandPoseDetector {
 
         var palmPoints: [VNRecognizedPoint] = []
         for joint in palmJoints {
-            if let point = try? observation.recognizedPoint(joint), point.confidence >= 0.20 {
+            if let point = points[joint], point.confidence >= 0.20 {
                 palmPoints.append(point)
             }
         }
@@ -83,13 +87,13 @@ final class HandPoseDetector {
         let centerY = palmPoints.reduce(0.0) { $0 + Double($1.location.y) } / Double(palmPoints.count)
         let confidence = palmPoints.reduce(0.0) { $0 + Double($1.confidence) } / Double(palmPoints.count)
 
-        let wrist = recognized(.wrist, in: observation, minimumConfidence: 0.20)
-        let middleMCP = recognized(.middleMCP, in: observation, minimumConfidence: 0.20)
-        let indexTip = recognized(.indexTip, in: observation, minimumConfidence: 0.25)
-        let indexDIP = recognized(.indexDIP, in: observation, minimumConfidence: 0.22)
-        let middleTip = recognized(.middleTip, in: observation, minimumConfidence: 0.25)
-        let middleDIP = recognized(.middleDIP, in: observation, minimumConfidence: 0.22)
-        let thumbTip = recognized(.thumbTip, in: observation, minimumConfidence: 0.25)
+        let wrist = recognized(.wrist, in: points, minimumConfidence: 0.20)
+        let middleMCP = recognized(.middleMCP, in: points, minimumConfidence: 0.20)
+        let indexTip = recognized(.indexTip, in: points, minimumConfidence: 0.25)
+        let indexDIP = recognized(.indexDIP, in: points, minimumConfidence: 0.22)
+        let middleTip = recognized(.middleTip, in: points, minimumConfidence: 0.25)
+        let middleDIP = recognized(.middleDIP, in: points, minimumConfidence: 0.22)
+        let thumbTip = recognized(.thumbTip, in: points, minimumConfidence: 0.25)
 
         // Tip + DIP same-frame fusion reduces jitter without temporal lag.
         let pointerX: Double
@@ -152,7 +156,7 @@ final class HandPoseDetector {
             }
         }
 
-        let pattern = try? makeFingerPattern(observation)
+        let pattern = makeFingerPattern(points)
 
         return HandPoseResult(
             centerX: centerX,
@@ -173,10 +177,10 @@ final class HandPoseDetector {
 
     private func recognized(
         _ joint: VNHumanHandPoseObservation.JointName,
-        in observation: VNHumanHandPoseObservation,
+        in points: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint],
         minimumConfidence: VNConfidence
     ) -> VNRecognizedPoint? {
-        guard let point = try? observation.recognizedPoint(joint),
+        guard let point = points[joint],
               point.confidence >= minimumConfidence else {
             return nil
         }
@@ -187,21 +191,27 @@ final class HandPoseDetector {
         hypot(Double(a.location.x - b.location.x), Double(a.location.y - b.location.y))
     }
 
-    private func makeFingerPattern(_ observation: VNHumanHandPoseObservation) throws -> FingerPattern? {
-        let wrist = try observation.recognizedPoint(.wrist)
-        let thumbTip = try observation.recognizedPoint(.thumbTip)
-        let thumbIP = try observation.recognizedPoint(.thumbIP)
-        let indexTip = try observation.recognizedPoint(.indexTip)
-        let indexPIP = try observation.recognizedPoint(.indexPIP)
-        let middleTip = try observation.recognizedPoint(.middleTip)
-        let middlePIP = try observation.recognizedPoint(.middlePIP)
-        let ringTip = try observation.recognizedPoint(.ringTip)
-        let ringPIP = try observation.recognizedPoint(.ringPIP)
-        let littleTip = try observation.recognizedPoint(.littleTip)
-        let littlePIP = try observation.recognizedPoint(.littlePIP)
-
-        let all = [wrist, thumbTip, thumbIP, indexTip, indexPIP, middleTip, middlePIP, ringTip, ringPIP, littleTip, littlePIP]
-        guard all.allSatisfy({ $0.confidence >= 0.30 }) else { return nil }
+    private func makeFingerPattern(
+        _ points: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint]
+    ) -> FingerPattern? {
+        let joints: [VNHumanHandPoseObservation.JointName] = [
+            .wrist, .thumbTip, .thumbIP, .indexTip, .indexPIP,
+            .middleTip, .middlePIP, .ringTip, .ringPIP, .littleTip, .littlePIP
+        ]
+        guard joints.allSatisfy({ points[$0]?.confidence ?? 0 >= 0.30 }),
+              let wrist = points[.wrist],
+              let thumbTip = points[.thumbTip],
+              let thumbIP = points[.thumbIP],
+              let indexTip = points[.indexTip],
+              let indexPIP = points[.indexPIP],
+              let middleTip = points[.middleTip],
+              let middlePIP = points[.middlePIP],
+              let ringTip = points[.ringTip],
+              let ringPIP = points[.ringPIP],
+              let littleTip = points[.littleTip],
+              let littlePIP = points[.littlePIP] else {
+            return nil
+        }
 
         func extended(tip: VNRecognizedPoint, bend: VNRecognizedPoint, ratio: Double = 1.10) -> Bool {
             distance(tip, wrist) > distance(bend, wrist) * ratio

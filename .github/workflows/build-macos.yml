@@ -4,10 +4,17 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: macos-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-15
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -16,6 +23,16 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      - name: Run platform-neutral smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test in scripts/*_smoke_test.swift; do
+            echo "::group::${test}"
+            xcrun swift "${test}"
+            echo "::endgroup::"
+          done
 
       - name: Build Release app
         run: |

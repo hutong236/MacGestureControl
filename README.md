@@ -1,6 +1,16 @@
-# Gesture Control for macOS V1.2.1 — Realtime Intent Engine
+# Gesture Control for macOS V1.2.2 — Realtime Intent Engine
 
 纯本地 macOS 空中触控板 / 手势控制工具。使用 Swift + AVFoundation + Apple Vision + Core Graphics，本机处理摄像头画面，不依赖 Python、MediaPipe、Electron 或云端 AI。
+
+## V1.2.2 持续优化
+
+- Bundle 版本统一由 Xcode build settings 生成，构建脚本从最终 App 读取版本，消除版本漂移；
+- CI 同时编译 Debug / Release，并将 Xcode 并发限制为 2，提升 SwiftCompile 失败的可诊断性；
+- Vision 手掌中心改为单次累加，不再为每只手每帧创建临时数组，finger pattern 也避免重复 joint 查找；
+- 指针/滚动历史窗口改为有序前缀裁剪，滚动释放估计不再创建临时 filter 数组；
+- 停止、摄像头错误和旧回调之后统一禁止新的合成输入，并确保左键释放，避免“幽灵拖拽”；
+- 持久化数值设置在启动时检查有限值并按合法范围夹紧，避免损坏的 UserDefaults 污染实时滤波；
+- 重复左键状态在创建 Core Graphics 事件之前即被丢弃，缩放步数对极端整数输入也保持安全。
 
 ## V1.2.1 稳定性 / 热路径优化
 

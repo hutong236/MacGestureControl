@@ -46,11 +46,13 @@ final class KeyboardController {
     /// 同时不再让 6~10ms 的 key-up 间隔阻塞调用线程。
     func zoom(steps: Int) {
         guard steps != 0 else { return }
-        let count = min(abs(steps), 3)
-        let keyCode: CGKeyCode = steps > 0 ? 24 : 27
+        // Clamp before taking an absolute value so Int.min can never overflow this utility path.
+        let boundedSteps = min(max(steps, -3), 3)
+        let count = boundedSteps.magnitude
+        let keyCode: CGKeyCode = boundedSteps > 0 ? 24 : 27
         eventQueue.async { [weak self] in
             guard let self else { return }
-            for _ in 0..<count {
+            for _ in 0..<Int(count) {
                 self.postKey(keyCode: keyCode, flags: .maskCommand, keyUpDelayUS: 6_000)
             }
         }

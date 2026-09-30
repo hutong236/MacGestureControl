@@ -61,7 +61,10 @@ final class DirectionalGestureEngine {
         guard sample.timestamp.isFinite,
               sample.x.isFinite,
               sample.y.isFinite,
-              sample.confidence.isFinite else {
+              sample.confidence.isFinite,
+              (0...1).contains(sample.confidence),
+              abs(sample.x) <= 4,
+              abs(sample.y) <= 4 else {
             return
         }
         guard sample.timestamp > lastAcceptedTimestamp else { return }

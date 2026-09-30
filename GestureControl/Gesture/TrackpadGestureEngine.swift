@@ -146,6 +146,7 @@ final class TrackpadGestureEngine {
     private let lock = NSLock()
     private var configuration = Configuration()
     private var lastSample: TrackpadSample?
+    private var lastInputTimestamp: TimeInterval = -.infinity
     private var mode: Mode = .idle
     private var interaction: TrackpadInteraction = .idle
 
@@ -712,6 +713,7 @@ final class TrackpadGestureEngine {
         }
 
         lastSample = nil
+        lastInputTimestamp = -.infinity
         mode = .idle
         pointerVelocityX = 0
         pointerVelocityY = 0
@@ -806,6 +808,10 @@ final class TrackpadGestureEngine {
         var holding = false
 
         lock.lock()
+        guard claimInputTimestampLocked(timestamp) else {
+            lock.unlock()
+            return false
+        }
         let wasTracking = mode != .idle || pointerActive || scrollActive || leftButtonDown
         if dropoutStartedAt == nil {
             dropoutStartedAt = timestamp
@@ -974,6 +980,11 @@ final class TrackpadGestureEngine {
 
     func process(_ sample: TrackpadSample) {
         let config = configurationSnapshot
+        guard sample.timestamp.isFinite, sample.timestamp >= 0 else { return }
+        guard isNumericallySafe(sample) else {
+            observationMissed(timestamp: sample.timestamp)
+            return
+        }
         // V1.0 仅保留非常低的硬底线。正常的置信度波动不再 reset，而是在滤波阶段软降权。
         guard sample.confidence >= config.minimumConfidence else {
             observationMissed(timestamp: sample.timestamp)
@@ -986,6 +997,10 @@ final class TrackpadGestureEngine {
         var advanceLastSample = true
 
         lock.lock()
+        guard claimInputTimestampLocked(sample.timestamp) else {
+            lock.unlock()
+            return
+        }
 
         let previous = lastSample
         let previousMode = mode
@@ -1407,6 +1422,46 @@ final class TrackpadGestureEngine {
         let snapshot = configuration
         lock.unlock()
         return snapshot
+    }
+
+    private func claimInputTimestampLocked(_ timestamp: TimeInterval) -> Bool {
+        guard timestamp.isFinite,
+              timestamp >= 0,
+              timestamp > lastInputTimestamp else {
+            return false
+        }
+        lastInputTimestamp = timestamp
+        return true
+    }
+
+    private func isNumericallySafe(_ sample: TrackpadSample) -> Bool {
+        guard sample.centerX.isFinite,
+              sample.centerY.isFinite,
+              sample.pointerX.isFinite,
+              sample.pointerY.isFinite,
+              sample.scrollX.isFinite,
+              sample.scrollY.isFinite,
+              sample.pointerObservationConfidence.isFinite,
+              sample.scrollObservationConfidence.isFinite,
+              sample.processingLatency.isFinite,
+              sample.processingLatency >= 0,
+              sample.confidence.isFinite else {
+            return false
+        }
+
+        if let palmScale = sample.palmScale,
+           !palmScale.isFinite || palmScale <= 0 {
+            return false
+        }
+        if let pinchRatio = sample.pinchRatio,
+           !pinchRatio.isFinite || pinchRatio < 0 {
+            return false
+        }
+        if let twoFingerSpan = sample.twoFingerSpan,
+           !twoFingerSpan.isFinite || twoFingerSpan < 0 {
+            return false
+        }
+        return true
     }
 
     // MARK: - Pinch / click intent

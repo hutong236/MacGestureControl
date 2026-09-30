@@ -25,7 +25,6 @@ final class TrackpadController {
         lock.lock()
         shouldProbe = virtualPointer == nil || now - lastExternalPointerProbeTime >= 0.060
         base = virtualPointer
-        dragging = leftButtonDown
         lock.unlock()
 
         // Reading current CG cursor position used to allocate a probe CGEvent on every 120Hz tick.
@@ -69,6 +68,14 @@ final class TrackpadController {
     }
 
     func setLeftButton(down: Bool) {
+        // Pinch recognition can report the same logical state repeatedly. Check the cached state
+        // before allocating Core Graphics probe/events, then verify again after probing in case a
+        // concurrent reset changed it.
+        lock.lock()
+        let needsChange = leftButtonDown != down
+        lock.unlock()
+        guard needsChange else { return }
+
         guard let probe = CGEvent(source: nil) else { return }
         let location = probe.location
         let type: CGEventType = down ? .leftMouseDown : .leftMouseUp

@@ -24,6 +24,11 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Validate scripts and plist
+        run: |
+          bash -n build_release.sh install_local.sh
+          plutil -lint GestureControl/Info.plist
+
       - name: Run platform-neutral smoke tests
         shell: bash
         run: |
@@ -34,6 +39,19 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Build Debug app
+        run: |
+          xcodebuild \
+            -project GestureControl.xcodeproj \
+            -scheme GestureControl \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -jobs 2 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
       - name: Build Release app
         run: |
           xcodebuild \
@@ -42,9 +60,17 @@ jobs:
             -configuration Release \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -jobs 2 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             clean build
+
+      - name: Verify bundle metadata
+        run: |
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release/GestureControl.app"
+          test -d "$APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"
 
       - name: Package app
         run: |
@@ -58,3 +84,4 @@ jobs:
           name: GestureControl-macOS-unsigned
           path: dist/GestureControl-macOS-unsigned.zip
           if-no-files-found: error
+          retention-days: 7

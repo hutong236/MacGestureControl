@@ -8,8 +8,8 @@ final class StaticGestureEngine {
     private var currentPattern: FingerPattern?
     private var stableSince: TimeInterval = 0
     private var blockedPattern: FingerPattern?
-    private var minimumHoldDuration: TimeInterval = 0.55
-    private var minimumConfidence = 0.45
+    private let minimumHoldDuration: TimeInterval = 0.55
+    private let minimumConfidence = 0.45
 
     var onGesture: ((CustomStaticGesture) -> Void)?
 

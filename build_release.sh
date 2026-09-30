@@ -31,10 +31,19 @@ esac
 JOBS="${GESTURECONTROL_XCODE_JOBS:-2}"
 UNIVERSAL="${GESTURECONTROL_UNIVERSAL:-0}"
 
+if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: GESTURECONTROL_XCODE_JOBS must be a positive integer (got: $JOBS)" >&2
+  exit 1
+fi
+if [[ "$UNIVERSAL" != "0" && "$UNIVERSAL" != "1" ]]; then
+  echo "ERROR: GESTURECONTROL_UNIVERSAL must be 0 or 1 (got: $UNIVERSAL)" >&2
+  exit 1
+fi
+
 rm -rf "$BUILD_DIR" "$OUT_DIR"
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 
-echo "GestureControl 1.2.0 build"
+echo "GestureControl build"
 echo "Xcode: $(xcodebuild -version | tr '\n' ' ')"
 echo "Host architecture: $HOST_ARCH"
 echo "Parallel jobs: $JOBS"
@@ -89,18 +98,21 @@ fi
 
 cp -R "$APP_PATH" "$OUTPUT_APP"
 
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$OUTPUT_APP/Contents/Info.plist")"
+APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$OUTPUT_APP/Contents/Info.plist")"
+
 # Accessibility/TCC ties permission to the application's code identity.
 # Prefer a persistent signing identity; fall back to ad-hoc signing for local use.
 SIGN_IDENTITY="${GESTURECONTROL_SIGN_IDENTITY:-}"
 if [[ -z "$SIGN_IDENTITY" ]] && command -v security >/dev/null 2>&1; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
     | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' \
-    | head -n 1)"
+    | head -n 1 || true)"
 fi
 if [[ -z "$SIGN_IDENTITY" ]] && command -v security >/dev/null 2>&1; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
     | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' \
-    | head -n 1)"
+    | head -n 1 || true)"
 fi
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
@@ -119,7 +131,7 @@ codesign --verify --deep --strict --verbose=2 "$OUTPUT_APP"
 ditto -c -k --sequesterRsrc --keepParent "$OUTPUT_APP" "$OUT_DIR/GestureControl-macOS.zip"
 
 cat > "$OUT_DIR/BUILD_INFO.txt" <<INFO
-GestureControl 1.2.0
+GestureControl $APP_VERSION ($APP_BUILD)
 Bundle ID: com.hutong.GestureControl
 Architecture mode: $([[ "$UNIVERSAL" == "1" ]] && echo universal || echo "$HOST_ARCH")
 Signing mode: $SIGNING_MODE

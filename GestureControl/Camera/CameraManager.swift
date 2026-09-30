@@ -100,10 +100,11 @@ final class CameraManager: NSObject, ObservableObject {
         // V1.2 realtime capture：若设备支持 60FPS，优先让采集层提供更“新”的帧。
         // Vision 仍由 latest-frame-wins 控制实际推理吞吐，因此这不会强迫 Vision 跑到 60FPS；
         // 但当一次推理结束时，mailbox 中等待的是最多约 16ms 前的新帧，而不是约 33ms 前的帧。
-        let preferredFPS: Int32 = camera.activeFormat.videoSupportedFrameRateRanges.contains(where: {
+        let frameRateRanges = camera.activeFormat.videoSupportedFrameRateRanges
+        let preferredFPS: Int32 = frameRateRanges.contains(where: {
             $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
         }) ? 60 : 30
-        if camera.activeFormat.videoSupportedFrameRateRanges.contains(where: {
+        if frameRateRanges.contains(where: {
             $0.minFrameRate <= Double(preferredFPS) && $0.maxFrameRate >= Double(preferredFPS)
         }) {
             do {
@@ -126,10 +127,15 @@ final class CameraManager: NSObject, ObservableObject {
         output.alwaysDiscardsLateVideoFrames = true
         // Vision 可以直接消费双平面 YUV。优先使用摄像头更接近原生的 420f，避免强制 BGRA
         // 色彩转换占用 CPU/内存带宽；不支持时再回退 BGRA。
-        let preferredPixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-        let pixelFormat = output.availableVideoPixelFormatTypes.contains(preferredPixelFormat)
-            ? preferredPixelFormat
-            : kCVPixelFormatType_32BGRA
+        let availablePixelFormats = output.availableVideoPixelFormatTypes
+        let preferredPixelFormats: [OSType] = [
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelFormatType_32BGRA
+        ]
+        let pixelFormat = preferredPixelFormats.first(where: availablePixelFormats.contains)
+            ?? availablePixelFormats.first
+            ?? kCVPixelFormatType_32BGRA
         output.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: pixelFormat
         ]

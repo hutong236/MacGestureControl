@@ -10,9 +10,12 @@ if [[ ! -d "$SOURCE_APP" ]]; then
   exit 1
 fi
 
+# Verify the build before replacing a known-good installed copy.
+codesign --verify --deep --strict --verbose=2 "$SOURCE_APP"
+
 pkill -x GestureControl >/dev/null 2>&1 || true
 rm -rf "$TARGET_APP"
-cp -R "$SOURCE_APP" "$TARGET_APP"
+ditto "$SOURCE_APP" "$TARGET_APP"
 
 # Verify the exact installed copy before asking TCC for permission.
 codesign --verify --deep --strict --verbose=2 "$TARGET_APP"

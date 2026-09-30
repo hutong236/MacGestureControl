@@ -22,6 +22,15 @@ final class HandPoseDetector {
     private let request: VNDetectHumanHandPoseRequest
     private let requestLock = NSLock()
 
+    private static let palmJoints: [VNHumanHandPoseObservation.JointName] = [
+        .wrist,
+        .indexMCP,
+        .middleMCP,
+        .ringMCP,
+        .littleMCP,
+        .thumbCMC
+    ]
+
     init() {
         request = VNDetectHumanHandPoseRequest()
         // Performance-first default. AppController enables two-hand detection only when requested.
@@ -64,28 +73,25 @@ final class HandPoseDetector {
         // add avoidable overhead in the camera/Vision hot path.
         guard let points = try? observation.recognizedPoints(.all) else { return nil }
 
-        let palmJoints: [VNHumanHandPoseObservation.JointName] = [
-            .wrist,
-            .indexMCP,
-            .middleMCP,
-            .ringMCP,
-            .littleMCP,
-            .thumbCMC
-        ]
-
-        var palmPoints: [VNRecognizedPoint] = []
-        for joint in palmJoints {
-            if let point = points[joint], point.confidence >= 0.20 {
-                palmPoints.append(point)
-            }
+        var palmPointCount = 0
+        var palmXSum = 0.0
+        var palmYSum = 0.0
+        var palmConfidenceSum = 0.0
+        for joint in Self.palmJoints {
+            guard let point = points[joint], point.confidence >= 0.20 else { continue }
+            palmPointCount += 1
+            palmXSum += Double(point.location.x)
+            palmYSum += Double(point.location.y)
+            palmConfidenceSum += Double(point.confidence)
         }
 
         // Two reliable palm points are enough to preserve short-term tracking.
-        guard palmPoints.count >= 2 else { return nil }
+        guard palmPointCount >= 2 else { return nil }
 
-        let centerX = palmPoints.reduce(0.0) { $0 + Double($1.location.x) } / Double(palmPoints.count)
-        let centerY = palmPoints.reduce(0.0) { $0 + Double($1.location.y) } / Double(palmPoints.count)
-        let confidence = palmPoints.reduce(0.0) { $0 + Double($1.confidence) } / Double(palmPoints.count)
+        let palmPointCountD = Double(palmPointCount)
+        let centerX = palmXSum / palmPointCountD
+        let centerY = palmYSum / palmPointCountD
+        let confidence = palmConfidenceSum / palmPointCountD
 
         let wrist = recognized(.wrist, in: points, minimumConfidence: 0.20)
         let middleMCP = recognized(.middleMCP, in: points, minimumConfidence: 0.20)
@@ -194,22 +200,17 @@ final class HandPoseDetector {
     private func makeFingerPattern(
         _ points: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint]
     ) -> FingerPattern? {
-        let joints: [VNHumanHandPoseObservation.JointName] = [
-            .wrist, .thumbTip, .thumbIP, .indexTip, .indexPIP,
-            .middleTip, .middlePIP, .ringTip, .ringPIP, .littleTip, .littlePIP
-        ]
-        guard joints.allSatisfy({ points[$0]?.confidence ?? 0 >= 0.30 }),
-              let wrist = points[.wrist],
-              let thumbTip = points[.thumbTip],
-              let thumbIP = points[.thumbIP],
-              let indexTip = points[.indexTip],
-              let indexPIP = points[.indexPIP],
-              let middleTip = points[.middleTip],
-              let middlePIP = points[.middlePIP],
-              let ringTip = points[.ringTip],
-              let ringPIP = points[.ringPIP],
-              let littleTip = points[.littleTip],
-              let littlePIP = points[.littlePIP] else {
+        guard let wrist = recognized(.wrist, in: points, minimumConfidence: 0.30),
+              let thumbTip = recognized(.thumbTip, in: points, minimumConfidence: 0.30),
+              let thumbIP = recognized(.thumbIP, in: points, minimumConfidence: 0.30),
+              let indexTip = recognized(.indexTip, in: points, minimumConfidence: 0.30),
+              let indexPIP = recognized(.indexPIP, in: points, minimumConfidence: 0.30),
+              let middleTip = recognized(.middleTip, in: points, minimumConfidence: 0.30),
+              let middlePIP = recognized(.middlePIP, in: points, minimumConfidence: 0.30),
+              let ringTip = recognized(.ringTip, in: points, minimumConfidence: 0.30),
+              let ringPIP = recognized(.ringPIP, in: points, minimumConfidence: 0.30),
+              let littleTip = recognized(.littleTip, in: points, minimumConfidence: 0.30),
+              let littlePIP = recognized(.littlePIP, in: points, minimumConfidence: 0.30) else {
             return nil
         }
 

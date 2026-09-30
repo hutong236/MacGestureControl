@@ -73,7 +73,15 @@ final class DirectionalGestureEngine {
 
         samples.append(sample)
         let cutoff = sample.timestamp - configuration.historyDuration
-        samples.removeAll { $0.timestamp < cutoff }
+        // Samples are timestamp-ordered, so stop scanning as soon as the first retained sample is
+        // found instead of evaluating a predicate across the whole history every frame.
+        if let firstRetained = samples.firstIndex(where: { $0.timestamp >= cutoff }) {
+            if firstRetained > samples.startIndex {
+                samples.removeSubrange(samples.startIndex..<firstRetained)
+            }
+        } else {
+            samples.removeAll(keepingCapacity: true)
+        }
 
         guard sample.timestamp - lastTriggerTime >= configuration.cooldown else {
             return

@@ -3,6 +3,18 @@ import AppKit
 import Combine
 import Foundation
 
+private func storedFiniteDouble(
+    _ defaults: UserDefaults,
+    key: String,
+    default defaultValue: Double,
+    range: ClosedRange<Double>
+) -> Double {
+    guard let value = defaults.object(forKey: key) as? Double, value.isFinite else {
+        return defaultValue
+    }
+    return min(max(value, range.lowerBound), range.upperBound)
+}
+
 final class AppController: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var handDetected = false
@@ -176,11 +188,11 @@ final class AppController: ObservableObject {
             controlMode = .trackpad
         }
 
-        sensitivity = storedDefaults.object(forKey: Keys.sensitivity) as? Double ?? 0.55
-        cooldown = storedDefaults.object(forKey: Keys.cooldown) as? Double ?? 0.85
-        pointerSensitivity = storedDefaults.object(forKey: Keys.pointerSensitivity) as? Double ?? 1.0
-        scrollSensitivity = storedDefaults.object(forKey: Keys.scrollSensitivity) as? Double ?? 1.0
-        scrollInertia = storedDefaults.object(forKey: Keys.scrollInertia) as? Double ?? 0.72
+        sensitivity = storedFiniteDouble(storedDefaults, key: Keys.sensitivity, default: 0.55, range: 0...1)
+        cooldown = storedFiniteDouble(storedDefaults, key: Keys.cooldown, default: 0.85, range: 0.20...2.50)
+        pointerSensitivity = storedFiniteDouble(storedDefaults, key: Keys.pointerSensitivity, default: 1.0, range: 0.35...2.50)
+        scrollSensitivity = storedFiniteDouble(storedDefaults, key: Keys.scrollSensitivity, default: 1.0, range: 0.35...2.50)
+        scrollInertia = storedFiniteDouble(storedDefaults, key: Keys.scrollInertia, default: 0.72, range: 0...1)
         // V1.1.1: 默认关闭键盘模拟缩放，避免双指滚动误触 Command +/-。
         twoFingerZoomEnabled = storedDefaults.object(forKey: Keys.twoFingerZoomEnabled) as? Bool ?? false
         // V1.1.2: 默认开启滚动回收抑制，避免主运动结束后收手被识别为反向滚动。
@@ -189,9 +201,22 @@ final class AppController: ObservableObject {
         // the pointer; open palm acts as clutch/recenter and an intentional pinch performs right-click.
         bimanualAssistEnabled = storedDefaults.object(forKey: Keys.bimanualAssistEnabled) as? Bool ?? false
         naturalScrolling = storedDefaults.object(forKey: Keys.naturalScrolling) as? Bool ?? true
-        trackingResponsiveness = storedDefaults.object(forKey: Keys.trackingResponsiveness) as? Double ?? 0.74
-        precisionAssist = storedDefaults.object(forKey: Keys.precisionAssist) as? Double ?? 0.68
-        let storedPalmScale = storedDefaults.object(forKey: Keys.personalPalmScale) as? Double
+        trackingResponsiveness = storedFiniteDouble(
+            storedDefaults,
+            key: Keys.trackingResponsiveness,
+            default: 0.74,
+            range: 0...1
+        )
+        precisionAssist = storedFiniteDouble(
+            storedDefaults,
+            key: Keys.precisionAssist,
+            default: 0.68,
+            range: 0...1
+        )
+        let rawPalmScale = storedDefaults.object(forKey: Keys.personalPalmScale) as? Double
+        let storedPalmScale = rawPalmScale.flatMap { value in
+            value.isFinite && value > 0.001 ? value : nil
+        }
         personalPalmScale = storedPalmScale
         calibrationProgress = storedPalmScale == nil ? 0 : 1
 
@@ -214,10 +239,15 @@ final class AppController: ObservableObject {
             self.process(sampleBuffer, capturedAt: capturedAt, generation: generation)
         }
         camera.errorHandler = { [weak self] message in
-            self?.endProcessingSession()
+            guard let self else { return }
+            self.endProcessingSession()
+            self.trackpadEngine.reset()
+            self.trackpad.setLeftButton(down: false)
+            self.trackpad.resetMotionState()
             DispatchQueue.main.async {
-                self?.lastError = message
-                self?.isRunning = false
+                self.lastError = message
+                self.isRunning = false
+                self.resetPublishedTrackingState()
             }
         }
 
@@ -233,13 +263,18 @@ final class AppController: ObservableObject {
         // Hot path: do not call CGPreflightPostEventAccess at 120Hz. Permission is checked when
         // enabling/refreshing the app; posting without permission is harmlessly ignored by macOS.
         trackpadEngine.onPointerDelta = { [weak self] dx, dy in
-            self?.trackpad.movePointer(deltaX: dx, deltaY: dy)
+            guard let self, self.isProcessingActive() else { return }
+            self.trackpad.movePointer(deltaX: dx, deltaY: dy)
         }
         trackpadEngine.onLeftButton = { [weak self] down in
-            self?.trackpad.setLeftButton(down: down)
+            guard let self else { return }
+            // A release must always be allowed through so stop/error cleanup cannot strand a drag.
+            guard !down || self.isProcessingActive() else { return }
+            self.trackpad.setLeftButton(down: down)
         }
         trackpadEngine.onScrollDelta = { [weak self] dx, dy in
-            self?.trackpad.scroll(deltaX: dx, deltaY: dy)
+            guard let self, self.isProcessingActive() else { return }
+            self.trackpad.scroll(deltaX: dx, deltaY: dy)
         }
         trackpadEngine.onSystemSwipe = { [weak self] direction in
             self?.handleSystemSwipe(direction)
@@ -256,40 +291,44 @@ final class AppController: ObservableObject {
             }
         }
         trackpadEngine.onTrackingTelemetry = { [weak self] fps, stability, gain, latency in
-            guard let self else { return }
+            guard let self, self.isProcessingActive() else { return }
             self.visionFPS = fps
             self.trackingStability = stability
             self.distanceGain = gain
             self.visionLatencyMS = latency * 1000
         }
         trackpadEngine.onPointerMotionPhaseChanged = { [weak self] phase in
-            self?.pointerMotionPhase = phase
+            guard let self, self.isProcessingActive() else { return }
+            self.pointerMotionPhase = phase
         }
         trackpadEngine.onScrollMotionPhaseChanged = { [weak self] phase in
-            self?.scrollMotionPhase = phase
+            guard let self, self.isProcessingActive() else { return }
+            self.scrollMotionPhase = phase
         }
         trackpadEngine.onContinuityTelemetry = { [weak self] continuity, dropped, hold, recoveryFrames in
-            guard let self else { return }
+            guard let self, self.isProcessingActive() else { return }
             self.trackingContinuity = continuity
             self.droppedObservationCount = dropped
             self.predictionHoldMS = hold * 1000
             self.lastRecoveryFrames = recoveryFrames
         }
         trackpadEngine.onInteractionChanged = { [weak self] interaction in
-            self?.trackpadInteraction = interaction
+            guard let self else { return }
+            guard self.isProcessingActive() || interaction == .idle else { return }
+            self.trackpadInteraction = interaction
             switch interaction {
             case .idle:
-                if self?.controlMode == .trackpad { self?.lastActionText = "等待触控板手势" }
+                if self.controlMode == .trackpad { self.lastActionText = "等待触控板手势" }
             case .pointer:
-                self?.lastActionText = "☝️ 一指移动指针"
+                self.lastActionText = "☝️ 一指移动指针"
             case .dragging:
-                self?.lastActionText = "🤏 捏合按下 / 拖拽"
+                self.lastActionText = "🤏 捏合按下 / 拖拽"
             case .scrolling:
-                self?.lastActionText = "✌️ 双指连续滚动"
+                self.lastActionText = "✌️ 双指连续滚动"
             case .zooming:
-                self?.lastActionText = "✌️ 双指张合缩放"
+                self.lastActionText = "✌️ 双指张合缩放"
             case .systemSwipe:
-                self?.lastActionText = "多指系统手势"
+                self.lastActionText = "多指系统手势"
             }
         }
 
@@ -317,6 +356,7 @@ final class AppController: ObservableObject {
     }
 
     func start() {
+        guard !isRunning else { return }
         runIntentGeneration &+= 1
         let generation = runIntentGeneration
         lastError = nil
@@ -354,25 +394,10 @@ final class AppController: ObservableObject {
         gestureEngine.reset()
         staticGestureEngine.reset()
         trackpadEngine.reset()
+        trackpad.setLeftButton(down: false)
         trackpad.resetMotionState()
         isRunning = false
-        handDetected = false
-        handConfidence = 0
-        currentFingerPattern = nil
-        trackpadInteraction = .idle
-        visionFPS = 0
-        trackingStability = 1
-        distanceGain = 1
-        visionLatencyMS = 0
-        pointerMotionPhase = .idle
-        scrollMotionPhase = .idle
-        trackingContinuity = 1
-        droppedObservationCount = 0
-        predictionHoldMS = 0
-        lastRecoveryFrames = 0
-        detectedHandCount = 0
-        secondaryHandDetected = false
-        bimanualClutchActive = false
+        resetPublishedTrackingState()
         resetHandAssignmentState()
     }
 
@@ -498,6 +523,13 @@ final class AppController: ObservableObject {
         return current
     }
 
+    private func isProcessingActive() -> Bool {
+        processingStateLock.lock()
+        let active = processingEnabled
+        processingStateLock.unlock()
+        return active
+    }
+
     private func process(
         _ sampleBuffer: CMSampleBuffer,
         capturedAt: TimeInterval,
@@ -518,12 +550,14 @@ final class AppController: ObservableObject {
         let assigned = assignHands(poses, timestamp: timestamp)
         let primaryPose = assigned.primary
         let secondaryPose = assigned.secondary
+        guard isProcessingGenerationCurrent(generation) else { return }
 
         if controlMode == .trackpad {
             updateBimanualAssist(secondaryPose, timestamp: timestamp)
         } else {
             setBimanualClutch(false, timestamp: timestamp)
         }
+        guard isProcessingGenerationCurrent(generation) else { return }
 
         guard let pose = primaryPose else {
             let continuityHolding: Bool
@@ -539,14 +573,15 @@ final class AppController: ObservableObject {
                 lastUIUpdate = timestamp
                 let handCount = poses.count
                 DispatchQueue.main.async { [weak self] in
-                    self?.detectedHandCount = handCount
-                    self?.secondaryHandDetected = secondaryPose != nil
-                    self?.handDetected = continuityHolding
+                    guard let self, self.isProcessingGenerationCurrent(generation) else { return }
+                    self.detectedHandCount = handCount
+                    self.secondaryHandDetected = secondaryPose != nil
+                    self.handDetected = continuityHolding
                     if continuityHolding {
-                        self?.handConfidence *= 0.88
+                        self.handConfidence *= 0.88
                     } else {
-                        self?.handConfidence = 0
-                        self?.currentFingerPattern = nil
+                        self.handConfidence = 0
+                        self.currentFingerPattern = nil
                     }
                 }
             }
@@ -595,11 +630,12 @@ final class AppController: ObservableObject {
             lastUIUpdate = timestamp
             let handCount = poses.count
             DispatchQueue.main.async { [weak self] in
-                self?.detectedHandCount = handCount
-                self?.secondaryHandDetected = secondaryPose != nil
-                self?.handDetected = true
-                self?.handConfidence = pose.confidence
-                self?.currentFingerPattern = pose.fingerPattern
+                guard let self, self.isProcessingGenerationCurrent(generation) else { return }
+                self.detectedHandCount = handCount
+                self.secondaryHandDetected = secondaryPose != nil
+                self.handDetected = true
+                self.handConfidence = pose.confidence
+                self.currentFingerPattern = pose.fingerPattern
             }
         }
     }
@@ -752,9 +788,12 @@ final class AppController: ObservableObject {
                 secondaryPinchArmed = false
                 secondaryPinchCandidateSince = nil
                 secondaryLastRightClickTime = timestamp
-                if PermissionManager.postEventAuthorized { trackpad.rightClick() }
+                if isProcessingActive(), PermissionManager.postEventAuthorized {
+                    trackpad.rightClick()
+                }
                 DispatchQueue.main.async { [weak self] in
-                    self?.lastActionText = "双手辅助：辅助手捏合 → 右键"
+                    guard let self, self.isProcessingActive() else { return }
+                    self.lastActionText = "双手辅助：辅助手捏合 → 右键"
                 }
             }
         } else if ratio > 0.38 {
@@ -770,8 +809,9 @@ final class AppController: ObservableObject {
             trackpad.resetScrollRemainder()
         }
         DispatchQueue.main.async { [weak self] in
-            self?.bimanualClutchActive = active
-            self?.lastActionText = active
+            guard let self, self.isProcessingActive() else { return }
+            self.bimanualClutchActive = active
+            self.lastActionText = active
                 ? "双手辅助：辅助手张开 → 离合重定位"
                 : "双手辅助：离合释放"
         }
@@ -794,6 +834,7 @@ final class AppController: ObservableObject {
     }
 
     private func handlePageGesture(_ direction: GestureDirection) {
+        guard isProcessingActive() else { return }
         lastGesture = direction
         let action = bindings[direction]
         lastActionText = action.displayName
@@ -807,6 +848,7 @@ final class AppController: ObservableObject {
     }
 
     private func handleStaticGesture(_ gesture: CustomStaticGesture) {
+        guard isProcessingActive() else { return }
         lastGesture = nil
         lastActionText = "\(gesture.name) → \(gesture.action.displayName)"
         gestureEngine.reset()
@@ -820,9 +862,9 @@ final class AppController: ObservableObject {
     }
 
     private func handleSystemSwipe(_ direction: GestureDirection) {
-        guard PermissionManager.postEventAuthorized else { return }
+        guard isProcessingActive(), PermissionManager.postEventAuthorized else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.isProcessingActive() else { return }
             self.lastGesture = direction
             switch direction {
             case .left:
@@ -842,11 +884,32 @@ final class AppController: ObservableObject {
     }
 
     private func handleZoom(_ step: Int) {
-        guard PermissionManager.postEventAuthorized else { return }
+        guard isProcessingActive(), PermissionManager.postEventAuthorized else { return }
         keyboard.zoom(steps: step)
         DispatchQueue.main.async { [weak self] in
-            self?.lastActionText = step > 0 ? "双指张开 → 连续放大" : "双指合拢 → 连续缩小"
+            guard let self, self.isProcessingActive() else { return }
+            self.lastActionText = step > 0 ? "双指张开 → 连续放大" : "双指合拢 → 连续缩小"
         }
+    }
+
+    private func resetPublishedTrackingState() {
+        handDetected = false
+        handConfidence = 0
+        currentFingerPattern = nil
+        trackpadInteraction = .idle
+        visionFPS = 0
+        trackingStability = 1
+        distanceGain = 1
+        visionLatencyMS = 0
+        pointerMotionPhase = .idle
+        scrollMotionPhase = .idle
+        trackingContinuity = 1
+        droppedObservationCount = 0
+        predictionHoldMS = 0
+        lastRecoveryFrames = 0
+        detectedHandCount = 0
+        secondaryHandDetected = false
+        bimanualClutchActive = false
     }
 
     private func resetRecognitionState() {
@@ -856,16 +919,7 @@ final class AppController: ObservableObject {
         trackpad.resetMotionState()
         lastGesture = nil
         lastActionText = controlMode == .trackpad ? "等待触控板手势" : "等待翻页手势"
-        trackpadInteraction = .idle
-        visionFPS = 0
-        trackingStability = 1
-        distanceGain = 1
-        visionLatencyMS = 0
-        pointerMotionPhase = .idle
-        scrollMotionPhase = .idle
-        detectedHandCount = 0
-        secondaryHandDetected = false
-        bimanualClutchActive = false
+        resetPublishedTrackingState()
         resetHandAssignmentState()
     }
 

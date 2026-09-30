@@ -292,40 +292,44 @@ final class AppController: ObservableObject {
             }
         }
         trackpadEngine.onTrackingTelemetry = { [weak self] fps, stability, gain, latency in
-            guard let self else { return }
+            guard let self, self.isProcessingActive() else { return }
             self.visionFPS = fps
             self.trackingStability = stability
             self.distanceGain = gain
             self.visionLatencyMS = latency * 1000
         }
         trackpadEngine.onPointerMotionPhaseChanged = { [weak self] phase in
-            self?.pointerMotionPhase = phase
+            guard let self, self.isProcessingActive() else { return }
+            self.pointerMotionPhase = phase
         }
         trackpadEngine.onScrollMotionPhaseChanged = { [weak self] phase in
-            self?.scrollMotionPhase = phase
+            guard let self, self.isProcessingActive() else { return }
+            self.scrollMotionPhase = phase
         }
         trackpadEngine.onContinuityTelemetry = { [weak self] continuity, dropped, hold, recoveryFrames in
-            guard let self else { return }
+            guard let self, self.isProcessingActive() else { return }
             self.trackingContinuity = continuity
             self.droppedObservationCount = dropped
             self.predictionHoldMS = hold * 1000
             self.lastRecoveryFrames = recoveryFrames
         }
         trackpadEngine.onInteractionChanged = { [weak self] interaction in
-            self?.trackpadInteraction = interaction
+            guard let self else { return }
+            guard self.isProcessingActive() || interaction == .idle else { return }
+            self.trackpadInteraction = interaction
             switch interaction {
             case .idle:
-                if self?.controlMode == .trackpad { self?.lastActionText = "等待触控板手势" }
+                if self.controlMode == .trackpad { self.lastActionText = "等待触控板手势" }
             case .pointer:
-                self?.lastActionText = "☝️ 一指移动指针"
+                self.lastActionText = "☝️ 一指移动指针"
             case .dragging:
-                self?.lastActionText = "🤏 捏合按下 / 拖拽"
+                self.lastActionText = "🤏 捏合按下 / 拖拽"
             case .scrolling:
-                self?.lastActionText = "✌️ 双指连续滚动"
+                self.lastActionText = "✌️ 双指连续滚动"
             case .zooming:
-                self?.lastActionText = "✌️ 双指张合缩放"
+                self.lastActionText = "✌️ 双指张合缩放"
             case .systemSwipe:
-                self?.lastActionText = "多指系统手势"
+                self.lastActionText = "多指系统手势"
             }
         }
 
@@ -563,12 +567,14 @@ final class AppController: ObservableObject {
         let assigned = assignHands(poses, timestamp: timestamp)
         let primaryPose = assigned.primary
         let secondaryPose = assigned.secondary
+        guard isProcessingGenerationCurrent(generation) else { return }
 
         if controlMode == .trackpad {
             updateBimanualAssist(secondaryPose, timestamp: timestamp)
         } else {
             setBimanualClutch(false, timestamp: timestamp)
         }
+        guard isProcessingGenerationCurrent(generation) else { return }
 
         guard let pose = primaryPose else {
             let continuityHolding: Bool
@@ -584,14 +590,15 @@ final class AppController: ObservableObject {
                 lastUIUpdate = timestamp
                 let handCount = poses.count
                 DispatchQueue.main.async { [weak self] in
-                    self?.detectedHandCount = handCount
-                    self?.secondaryHandDetected = secondaryPose != nil
-                    self?.handDetected = continuityHolding
+                    guard let self, self.isProcessingGenerationCurrent(generation) else { return }
+                    self.detectedHandCount = handCount
+                    self.secondaryHandDetected = secondaryPose != nil
+                    self.handDetected = continuityHolding
                     if continuityHolding {
-                        self?.handConfidence *= 0.88
+                        self.handConfidence *= 0.88
                     } else {
-                        self?.handConfidence = 0
-                        self?.currentFingerPattern = nil
+                        self.handConfidence = 0
+                        self.currentFingerPattern = nil
                     }
                 }
             }
@@ -640,11 +647,12 @@ final class AppController: ObservableObject {
             lastUIUpdate = timestamp
             let handCount = poses.count
             DispatchQueue.main.async { [weak self] in
-                self?.detectedHandCount = handCount
-                self?.secondaryHandDetected = secondaryPose != nil
-                self?.handDetected = true
-                self?.handConfidence = pose.confidence
-                self?.currentFingerPattern = pose.fingerPattern
+                guard let self, self.isProcessingGenerationCurrent(generation) else { return }
+                self.detectedHandCount = handCount
+                self.secondaryHandDetected = secondaryPose != nil
+                self.handDetected = true
+                self.handConfidence = pose.confidence
+                self.currentFingerPattern = pose.fingerPattern
             }
         }
     }

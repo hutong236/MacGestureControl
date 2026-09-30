@@ -23,7 +23,9 @@ require(trackpadSource.contains("isNumericallySafe(_ sample: TrackpadSample)"), 
 require(trackpadSource.contains("claimInputTimestampLocked"), "Trackpad monotonic timestamp gate missing")
 require(directionalSource.contains("lastAcceptedTimestamp"), "Directional timestamp gate missing")
 require(directionalSource.contains("samples.count > 120"), "Directional history bound missing")
+require(directionalSource.contains("lastTriggerTime = -.infinity"), "Directional reset must clear cooldown")
 require(staticSource.contains("lastAcceptedTimestamp"), "Static gesture timestamp gate missing")
+require(staticSource.contains("currentPattern = nil"), "Static gesture edits must restart hold timing")
 
 struct StressSample {
     var centerX: Double
@@ -42,7 +44,7 @@ struct StressSample {
     var confidence: Double
 }
 
-enum Decision {
+enum Decision: Equatable {
     case accepted
     case missed
     case ignored
@@ -63,7 +65,7 @@ struct IngressGate {
             sample.scrollX, sample.scrollY,
             sample.pointerConfidence, sample.scrollConfidence,
             sample.latency, sample.confidence
-        ].allSatisfy(\.isFinite)
+        ].allSatisfy { $0.isFinite }
 
         guard finiteRequired, sample.latency >= 0 else { return .missed }
         if let value = sample.palmScale, !value.isFinite || value <= 0 { return .missed }

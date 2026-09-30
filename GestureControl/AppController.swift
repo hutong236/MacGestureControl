@@ -809,7 +809,8 @@ final class AppController: ObservableObject {
                     trackpad.rightClick()
                 }
                 DispatchQueue.main.async { [weak self] in
-                    self?.lastActionText = "双手辅助：辅助手捏合 → 右键"
+                    guard let self, self.isProcessingActive() else { return }
+                    self.lastActionText = "双手辅助：辅助手捏合 → 右键"
                 }
             }
         } else if ratio > 0.38 {
@@ -825,8 +826,9 @@ final class AppController: ObservableObject {
             trackpad.resetScrollRemainder()
         }
         DispatchQueue.main.async { [weak self] in
-            self?.bimanualClutchActive = active
-            self?.lastActionText = active
+            guard let self, self.isProcessingActive() else { return }
+            self.bimanualClutchActive = active
+            self.lastActionText = active
                 ? "双手辅助：辅助手张开 → 离合重定位"
                 : "双手辅助：离合释放"
         }
@@ -879,7 +881,7 @@ final class AppController: ObservableObject {
     private func handleSystemSwipe(_ direction: GestureDirection) {
         guard isProcessingActive(), PermissionManager.postEventAuthorized else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.isProcessingActive() else { return }
             self.lastGesture = direction
             switch direction {
             case .left:
@@ -902,7 +904,8 @@ final class AppController: ObservableObject {
         guard isProcessingActive(), PermissionManager.postEventAuthorized else { return }
         keyboard.zoom(steps: step)
         DispatchQueue.main.async { [weak self] in
-            self?.lastActionText = step > 0 ? "双指张开 → 连续放大" : "双指合拢 → 连续缩小"
+            guard let self, self.isProcessingActive() else { return }
+            self.lastActionText = step > 0 ? "双指张开 → 连续放大" : "双指合拢 → 连续缩小"
         }
     }
 

@@ -230,7 +230,11 @@ struct FingerPattern: Codable, Equatable, Hashable {
     }
 
     var extendedCount: Int {
-        [thumb, index, middle, ring, little].filter { $0 }.count
+        (thumb ? 1 : 0)
+            + (index ? 1 : 0)
+            + (middle ? 1 : 0)
+            + (ring ? 1 : 0)
+            + (little ? 1 : 0)
     }
 
     /// 类似触控板“一指”：允许拇指检测有少量抖动，但要求其余三指收起。

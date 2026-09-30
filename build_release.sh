@@ -31,6 +31,15 @@ esac
 JOBS="${GESTURECONTROL_XCODE_JOBS:-2}"
 UNIVERSAL="${GESTURECONTROL_UNIVERSAL:-0}"
 
+if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: GESTURECONTROL_XCODE_JOBS must be a positive integer (got: $JOBS)" >&2
+  exit 1
+fi
+if [[ "$UNIVERSAL" != "0" && "$UNIVERSAL" != "1" ]]; then
+  echo "ERROR: GESTURECONTROL_UNIVERSAL must be 0 or 1 (got: $UNIVERSAL)" >&2
+  exit 1
+fi
+
 rm -rf "$BUILD_DIR" "$OUT_DIR"
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 
@@ -98,12 +107,12 @@ SIGN_IDENTITY="${GESTURECONTROL_SIGN_IDENTITY:-}"
 if [[ -z "$SIGN_IDENTITY" ]] && command -v security >/dev/null 2>&1; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
     | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' \
-    | head -n 1)"
+    | head -n 1 || true)"
 fi
 if [[ -z "$SIGN_IDENTITY" ]] && command -v security >/dev/null 2>&1; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
     | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' \
-    | head -n 1)"
+    | head -n 1 || true)"
 fi
 
 if [[ -n "$SIGN_IDENTITY" ]]; then

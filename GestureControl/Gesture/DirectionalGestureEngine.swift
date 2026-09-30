@@ -43,6 +43,7 @@ final class DirectionalGestureEngine {
     func reset() {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        lastTriggerTime = -.infinity
         lastAcceptedTimestamp = -.infinity
         blockedDirection = nil
         returnMotionSeen = false

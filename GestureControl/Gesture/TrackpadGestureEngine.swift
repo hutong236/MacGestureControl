@@ -390,7 +390,13 @@ final class TrackpadGestureEngine {
         )
         let window = min(max(config.trajectoryWindow, 0.08), 0.24)
         let cutoff = timestamp - window
-        pointerTrajectory.removeAll { $0.timestamp < cutoff }
+        if let firstRetained = pointerTrajectory.firstIndex(where: { $0.timestamp >= cutoff }) {
+            if firstRetained > pointerTrajectory.startIndex {
+                pointerTrajectory.removeSubrange(pointerTrajectory.startIndex..<firstRetained)
+            }
+        } else {
+            pointerTrajectory.removeAll(keepingCapacity: true)
+        }
         if pointerTrajectory.count > 6 {
             pointerTrajectory.removeFirst(pointerTrajectory.count - 6)
         }
@@ -2029,7 +2035,13 @@ final class TrackpadGestureEngine {
         guard x.isFinite, y.isFinite else { return }
         scrollVelocityHistory.append(VelocitySample(timestamp: timestamp, x: x, y: y))
         let cutoff = timestamp - max(window, 0.06)
-        scrollVelocityHistory.removeAll { $0.timestamp < cutoff }
+        if let firstRetained = scrollVelocityHistory.firstIndex(where: { $0.timestamp >= cutoff }) {
+            if firstRetained > scrollVelocityHistory.startIndex {
+                scrollVelocityHistory.removeSubrange(scrollVelocityHistory.startIndex..<firstRetained)
+            }
+        } else {
+            scrollVelocityHistory.removeAll(keepingCapacity: true)
+        }
         if scrollVelocityHistory.count > 12 {
             scrollVelocityHistory.removeFirst(scrollVelocityHistory.count - 12)
         }
@@ -2039,14 +2051,13 @@ final class TrackpadGestureEngine {
     /// 最后一帧往往已经因为 Vision 丢点、手指开始收回或滤波而变慢。
     private func prepareScrollReleaseLocked(timestamp: TimeInterval) {
         let window = max(configuration.scrollReleaseWindow, 0.06)
-        let samples = scrollVelocityHistory.filter { timestamp - $0.timestamp <= window }
-        guard !samples.isEmpty else { return }
 
         var totalWeight = 0.0
         var vx = 0.0
         var vy = 0.0
-        for sample in samples {
-            let age = max(0, timestamp - sample.timestamp)
+        for sample in scrollVelocityHistory {
+            let age = timestamp - sample.timestamp
+            guard age >= 0, age <= window else { continue }
             let freshness = max(0.08, 1.0 - age / window)
             let speed = hypot(sample.x, sample.y)
             let motionWeight = 0.45 + min(speed / 1400.0, 1.0) * 0.55

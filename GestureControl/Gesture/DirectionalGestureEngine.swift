@@ -23,6 +23,7 @@ final class DirectionalGestureEngine {
     private let lock = NSLock()
     private var samples: [HandSample] = []
     private var lastTriggerTime: TimeInterval = -.infinity
+    private var lastAcceptedTimestamp: TimeInterval = -.infinity
     private var configuration = Configuration()
 
     // V1.2 return-path latch.
@@ -42,6 +43,7 @@ final class DirectionalGestureEngine {
     func reset() {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        lastAcceptedTimestamp = -.infinity
         blockedDirection = nil
         returnMotionSeen = false
         neutralSince = nil
@@ -54,6 +56,15 @@ final class DirectionalGestureEngine {
 
         lock.lock()
         defer { lock.unlock() }
+
+        guard sample.timestamp.isFinite,
+              sample.x.isFinite,
+              sample.y.isFinite,
+              sample.confidence.isFinite else {
+            return
+        }
+        guard sample.timestamp > lastAcceptedTimestamp else { return }
+        lastAcceptedTimestamp = sample.timestamp
 
         guard sample.confidence >= configuration.minimumConfidence else {
             // Losing the hand/pose is equivalent to lifting from a real trackpad: fully re-arm.
@@ -72,6 +83,9 @@ final class DirectionalGestureEngine {
         }
 
         samples.append(sample)
+        if samples.count > 120 {
+            samples.removeFirst(samples.count - 120)
+        }
         let cutoff = sample.timestamp - configuration.historyDuration
         // Samples are timestamp-ordered, so stop scanning as soon as the first retained sample is
         // found instead of evaluating a predicate across the whole history every frame.

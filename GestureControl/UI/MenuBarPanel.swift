@@ -2,6 +2,10 @@ import SwiftUI
 import Foundation
 
 struct MenuBarPanel: View {
+    private static let appVersionText: String = {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return "V" + (version ?? "1.2")
+    }()
     @ObservedObject var controller: AppController
     @State private var newGestureName = ""
     @State private var newGestureAction: KeyActionPreset = .space
@@ -93,16 +97,11 @@ struct MenuBarPanel: View {
                 Circle()
                     .fill(controller.handDetected ? Color.green : Color.gray.opacity(0.35))
                     .frame(width: 10, height: 10)
-                Text(appVersionText)
+                Text(Self.appVersionText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
-    }
-
-    private var appVersionText: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        return "V" + (version ?? "1.2")
     }
 
     private var controlSection: some View {

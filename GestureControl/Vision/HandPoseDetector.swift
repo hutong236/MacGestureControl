@@ -78,7 +78,8 @@ final class HandPoseDetector {
         var palmYSum = 0.0
         var palmConfidenceSum = 0.0
         for joint in Self.palmJoints {
-            guard let point = points[joint], point.confidence >= 0.20 else { continue }
+            guard let point = points[joint],
+                  isUsable(point, minimumConfidence: 0.20) else { continue }
             palmPointCount += 1
             palmXSum += Double(point.location.x)
             palmYSum += Double(point.location.y)
@@ -187,10 +188,17 @@ final class HandPoseDetector {
         minimumConfidence: VNConfidence
     ) -> VNRecognizedPoint? {
         guard let point = points[joint],
-              point.confidence >= minimumConfidence else {
+              isUsable(point, minimumConfidence: minimumConfidence) else {
             return nil
         }
         return point
+    }
+
+    private func isUsable(_ point: VNRecognizedPoint, minimumConfidence: VNConfidence) -> Bool {
+        point.confidence.isFinite
+            && point.location.x.isFinite
+            && point.location.y.isFinite
+            && point.confidence >= minimumConfidence
     }
 
     private func distance(_ a: VNRecognizedPoint, _ b: VNRecognizedPoint) -> Double {

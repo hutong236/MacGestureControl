@@ -7,6 +7,7 @@ final class StaticGestureEngine {
     private var gestures: [CustomStaticGesture] = []
     private var currentPattern: FingerPattern?
     private var stableSince: TimeInterval = 0
+    private var lastAcceptedTimestamp: TimeInterval = -.infinity
     private var blockedPattern: FingerPattern?
     private let minimumHoldDuration: TimeInterval = 0.55
     private let minimumConfidence = 0.45
@@ -16,6 +17,11 @@ final class StaticGestureEngine {
     func update(gestures newGestures: [CustomStaticGesture]) {
         lock.lock()
         gestures = newGestures
+        // Editing the gesture list must start a fresh hold interval. Otherwise a pattern that was
+        // already stable before the edit can immediately fire a newly-added or re-enabled action.
+        currentPattern = nil
+        blockedPattern = nil
+        stableSince = 0
         lock.unlock()
     }
 
@@ -24,6 +30,7 @@ final class StaticGestureEngine {
         currentPattern = nil
         blockedPattern = nil
         stableSince = 0
+        lastAcceptedTimestamp = -.infinity
         lock.unlock()
     }
 
@@ -32,6 +39,10 @@ final class StaticGestureEngine {
 
         lock.lock()
         defer { lock.unlock() }
+
+        guard timestamp.isFinite, confidence.isFinite else { return }
+        guard timestamp > lastAcceptedTimestamp else { return }
+        lastAcceptedTimestamp = timestamp
 
         guard confidence >= minimumConfidence, let pattern else {
             currentPattern = nil

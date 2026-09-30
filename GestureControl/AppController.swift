@@ -241,6 +241,7 @@ final class AppController: ObservableObject {
         camera.errorHandler = { [weak self] message in
             guard let self else { return }
             self.endProcessingSession()
+            self.keyboard.cancelPendingEvents()
             self.trackpadEngine.reset()
             self.trackpad.setLeftButton(down: false)
             self.trackpad.resetMotionState()
@@ -390,6 +391,7 @@ final class AppController: ObservableObject {
     func stop() {
         runIntentGeneration &+= 1
         endProcessingSession()
+        keyboard.cancelPendingEvents()
         camera.stop()
         gestureEngine.reset()
         staticGestureEngine.reset()
@@ -834,31 +836,39 @@ final class AppController: ObservableObject {
     }
 
     private func handlePageGesture(_ direction: GestureDirection) {
-        guard isProcessingActive() else { return }
-        lastGesture = direction
-        let action = bindings[direction]
-        lastActionText = action.displayName
+        // DirectionalGestureEngine fires from the Vision queue. Keep ObservableObject mutations and
+        // binding reads on main so SwiftUI never receives background publications or races an edit.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isProcessingActive() else { return }
+            self.lastGesture = direction
+            let action = self.bindings[direction]
+            self.lastActionText = action.displayName
 
-        refreshPermissions()
-        guard accessibilityPermission else {
-            lastError = "已识别手势，但当前进程尚未获得“辅助功能”权限。若刚刚开启，请重新启动 GestureControl。"
-            return
+            self.refreshPermissions()
+            guard self.accessibilityPermission else {
+                self.lastError = "已识别手势，但当前进程尚未获得“辅助功能”权限。若刚刚开启，请重新启动 GestureControl。"
+                return
+            }
+            self.keyboard.send(action)
         }
-        keyboard.send(action)
     }
 
     private func handleStaticGesture(_ gesture: CustomStaticGesture) {
-        guard isProcessingActive() else { return }
-        lastGesture = nil
-        lastActionText = "\(gesture.name) → \(gesture.action.displayName)"
-        gestureEngine.reset()
+        // StaticGestureEngine also runs on the Vision path. Serialize UI state and configuration
+        // access through main, and re-check processing state after the queue hop before posting input.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isProcessingActive() else { return }
+            self.lastGesture = nil
+            self.lastActionText = "\(gesture.name) → \(gesture.action.displayName)"
+            self.gestureEngine.reset()
 
-        refreshPermissions()
-        guard accessibilityPermission else {
-            lastError = "已识别自定义手势，但当前进程尚未获得“辅助功能”权限。"
-            return
+            self.refreshPermissions()
+            guard self.accessibilityPermission else {
+                self.lastError = "已识别自定义手势，但当前进程尚未获得“辅助功能”权限。"
+                return
+            }
+            self.keyboard.send(gesture.action)
         }
-        keyboard.send(gesture.action)
     }
 
     private func handleSystemSwipe(_ direction: GestureDirection) {
@@ -913,6 +923,8 @@ final class AppController: ObservableObject {
     }
 
     private func resetRecognitionState() {
+        // Mode switches and restarts invalidate queued shortcuts from the previous recognition epoch.
+        keyboard.cancelPendingEvents()
         gestureEngine.reset()
         staticGestureEngine.reset()
         trackpadEngine.reset()

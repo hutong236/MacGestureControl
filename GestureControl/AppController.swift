@@ -247,8 +247,7 @@ final class AppController: ObservableObject {
             DispatchQueue.main.async {
                 self.lastError = message
                 self.isRunning = false
-                self.handDetected = false
-                self.trackpadInteraction = .idle
+                self.resetPublishedTrackingState()
             }
         }
 
@@ -398,23 +397,7 @@ final class AppController: ObservableObject {
         trackpad.setLeftButton(down: false)
         trackpad.resetMotionState()
         isRunning = false
-        handDetected = false
-        handConfidence = 0
-        currentFingerPattern = nil
-        trackpadInteraction = .idle
-        visionFPS = 0
-        trackingStability = 1
-        distanceGain = 1
-        visionLatencyMS = 0
-        pointerMotionPhase = .idle
-        scrollMotionPhase = .idle
-        trackingContinuity = 1
-        droppedObservationCount = 0
-        predictionHoldMS = 0
-        lastRecoveryFrames = 0
-        detectedHandCount = 0
-        secondaryHandDetected = false
-        bimanualClutchActive = false
+        resetPublishedTrackingState()
         resetHandAssignmentState()
     }
 
@@ -909,13 +892,10 @@ final class AppController: ObservableObject {
         }
     }
 
-    private func resetRecognitionState() {
-        gestureEngine.reset()
-        staticGestureEngine.reset()
-        trackpadEngine.reset()
-        trackpad.resetMotionState()
-        lastGesture = nil
-        lastActionText = controlMode == .trackpad ? "等待触控板手势" : "等待翻页手势"
+    private func resetPublishedTrackingState() {
+        handDetected = false
+        handConfidence = 0
+        currentFingerPattern = nil
         trackpadInteraction = .idle
         visionFPS = 0
         trackingStability = 1
@@ -923,9 +903,23 @@ final class AppController: ObservableObject {
         visionLatencyMS = 0
         pointerMotionPhase = .idle
         scrollMotionPhase = .idle
+        trackingContinuity = 1
+        droppedObservationCount = 0
+        predictionHoldMS = 0
+        lastRecoveryFrames = 0
         detectedHandCount = 0
         secondaryHandDetected = false
         bimanualClutchActive = false
+    }
+
+    private func resetRecognitionState() {
+        gestureEngine.reset()
+        staticGestureEngine.reset()
+        trackpadEngine.reset()
+        trackpad.resetMotionState()
+        lastGesture = nil
+        lastActionText = controlMode == .trackpad ? "等待触控板手势" : "等待翻页手势"
+        resetPublishedTrackingState()
         resetHandAssignmentState()
     }
 

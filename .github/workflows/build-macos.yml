@@ -24,6 +24,11 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Validate scripts and plist
+        run: |
+          bash -n build_release.sh install_local.sh
+          plutil -lint GestureControl/Info.plist
+
       - name: Run platform-neutral smoke tests
         shell: bash
         run: |

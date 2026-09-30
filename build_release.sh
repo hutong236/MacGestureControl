@@ -34,7 +34,7 @@ UNIVERSAL="${GESTURECONTROL_UNIVERSAL:-0}"
 rm -rf "$BUILD_DIR" "$OUT_DIR"
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 
-echo "GestureControl 1.2.0 build"
+echo "GestureControl build"
 echo "Xcode: $(xcodebuild -version | tr '\n' ' ')"
 echo "Host architecture: $HOST_ARCH"
 echo "Parallel jobs: $JOBS"
@@ -89,6 +89,9 @@ fi
 
 cp -R "$APP_PATH" "$OUTPUT_APP"
 
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$OUTPUT_APP/Contents/Info.plist")"
+APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$OUTPUT_APP/Contents/Info.plist")"
+
 # Accessibility/TCC ties permission to the application's code identity.
 # Prefer a persistent signing identity; fall back to ad-hoc signing for local use.
 SIGN_IDENTITY="${GESTURECONTROL_SIGN_IDENTITY:-}"
@@ -119,7 +122,7 @@ codesign --verify --deep --strict --verbose=2 "$OUTPUT_APP"
 ditto -c -k --sequesterRsrc --keepParent "$OUTPUT_APP" "$OUT_DIR/GestureControl-macOS.zip"
 
 cat > "$OUT_DIR/BUILD_INFO.txt" <<INFO
-GestureControl 1.2.0
+GestureControl $APP_VERSION ($APP_BUILD)
 Bundle ID: com.hutong.GestureControl
 Architecture mode: $([[ "$UNIVERSAL" == "1" ]] && echo universal || echo "$HOST_ARCH")
 Signing mode: $SIGNING_MODE

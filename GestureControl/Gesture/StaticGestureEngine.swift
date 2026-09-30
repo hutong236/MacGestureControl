@@ -17,6 +17,11 @@ final class StaticGestureEngine {
     func update(gestures newGestures: [CustomStaticGesture]) {
         lock.lock()
         gestures = newGestures
+        // Editing the gesture list must start a fresh hold interval. Otherwise a pattern that was
+        // already stable before the edit can immediately fire a newly-added or re-enabled action.
+        currentPattern = nil
+        blockedPattern = nil
+        stableSince = 0
         lock.unlock()
     }
 

@@ -214,10 +214,16 @@ final class AppController: ObservableObject {
             self.process(sampleBuffer, capturedAt: capturedAt, generation: generation)
         }
         camera.errorHandler = { [weak self] message in
-            self?.endProcessingSession()
+            guard let self else { return }
+            self.endProcessingSession()
+            self.trackpadEngine.reset()
+            self.trackpad.setLeftButton(down: false)
+            self.trackpad.resetMotionState()
             DispatchQueue.main.async {
-                self?.lastError = message
-                self?.isRunning = false
+                self.lastError = message
+                self.isRunning = false
+                self.handDetected = false
+                self.trackpadInteraction = .idle
             }
         }
 
@@ -233,13 +239,18 @@ final class AppController: ObservableObject {
         // Hot path: do not call CGPreflightPostEventAccess at 120Hz. Permission is checked when
         // enabling/refreshing the app; posting without permission is harmlessly ignored by macOS.
         trackpadEngine.onPointerDelta = { [weak self] dx, dy in
-            self?.trackpad.movePointer(deltaX: dx, deltaY: dy)
+            guard let self, self.isProcessingActive() else { return }
+            self.trackpad.movePointer(deltaX: dx, deltaY: dy)
         }
         trackpadEngine.onLeftButton = { [weak self] down in
-            self?.trackpad.setLeftButton(down: down)
+            guard let self else { return }
+            // A release must always be allowed through so stop/error cleanup cannot strand a drag.
+            guard !down || self.isProcessingActive() else { return }
+            self.trackpad.setLeftButton(down: down)
         }
         trackpadEngine.onScrollDelta = { [weak self] dx, dy in
-            self?.trackpad.scroll(deltaX: dx, deltaY: dy)
+            guard let self, self.isProcessingActive() else { return }
+            self.trackpad.scroll(deltaX: dx, deltaY: dy)
         }
         trackpadEngine.onSystemSwipe = { [weak self] direction in
             self?.handleSystemSwipe(direction)
@@ -317,6 +328,7 @@ final class AppController: ObservableObject {
     }
 
     func start() {
+        guard !isRunning else { return }
         runIntentGeneration &+= 1
         let generation = runIntentGeneration
         lastError = nil
@@ -354,6 +366,7 @@ final class AppController: ObservableObject {
         gestureEngine.reset()
         staticGestureEngine.reset()
         trackpadEngine.reset()
+        trackpad.setLeftButton(down: false)
         trackpad.resetMotionState()
         isRunning = false
         handDetected = false
@@ -496,6 +509,13 @@ final class AppController: ObservableObject {
         let current = processingEnabled && processingGeneration == generation
         processingStateLock.unlock()
         return current
+    }
+
+    private func isProcessingActive() -> Bool {
+        processingStateLock.lock()
+        let active = processingEnabled
+        processingStateLock.unlock()
+        return active
     }
 
     private func process(
@@ -752,7 +772,9 @@ final class AppController: ObservableObject {
                 secondaryPinchArmed = false
                 secondaryPinchCandidateSince = nil
                 secondaryLastRightClickTime = timestamp
-                if PermissionManager.postEventAuthorized { trackpad.rightClick() }
+                if isProcessingActive(), PermissionManager.postEventAuthorized {
+                    trackpad.rightClick()
+                }
                 DispatchQueue.main.async { [weak self] in
                     self?.lastActionText = "双手辅助：辅助手捏合 → 右键"
                 }
@@ -794,6 +816,7 @@ final class AppController: ObservableObject {
     }
 
     private func handlePageGesture(_ direction: GestureDirection) {
+        guard isProcessingActive() else { return }
         lastGesture = direction
         let action = bindings[direction]
         lastActionText = action.displayName
@@ -807,6 +830,7 @@ final class AppController: ObservableObject {
     }
 
     private func handleStaticGesture(_ gesture: CustomStaticGesture) {
+        guard isProcessingActive() else { return }
         lastGesture = nil
         lastActionText = "\(gesture.name) → \(gesture.action.displayName)"
         gestureEngine.reset()
@@ -820,7 +844,7 @@ final class AppController: ObservableObject {
     }
 
     private func handleSystemSwipe(_ direction: GestureDirection) {
-        guard PermissionManager.postEventAuthorized else { return }
+        guard isProcessingActive(), PermissionManager.postEventAuthorized else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.lastGesture = direction
@@ -842,7 +866,7 @@ final class AppController: ObservableObject {
     }
 
     private func handleZoom(_ step: Int) {
-        guard PermissionManager.postEventAuthorized else { return }
+        guard isProcessingActive(), PermissionManager.postEventAuthorized else { return }
         keyboard.zoom(steps: step)
         DispatchQueue.main.async { [weak self] in
             self?.lastActionText = step > 0 ? "双指张开 → 连续放大" : "双指合拢 → 连续缩小"

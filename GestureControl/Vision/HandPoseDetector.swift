@@ -195,10 +195,18 @@ final class HandPoseDetector {
     }
 
     private func isUsable(_ point: VNRecognizedPoint, minimumConfidence: VNConfidence) -> Bool {
-        point.confidence.isFinite
-            && point.location.x.isFinite
-            && point.location.y.isFinite
+        let x = Double(point.location.x)
+        let y = Double(point.location.y)
+
+        // Vision coordinates are normalized. Keep a generous edge envelope for partially clipped
+        // hands, but quarantine finite-yet-corrupt landmarks before they can become huge velocities.
+        return point.confidence.isFinite
+            && x.isFinite
+            && y.isFinite
             && point.confidence >= minimumConfidence
+            && point.confidence <= 1
+            && (-0.5...1.5).contains(x)
+            && (-0.5...1.5).contains(y)
     }
 
     private func distance(_ a: VNRecognizedPoint, _ b: VNRecognizedPoint) -> Double {

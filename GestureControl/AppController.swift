@@ -3,6 +3,18 @@ import AppKit
 import Combine
 import Foundation
 
+private func storedFiniteDouble(
+    _ defaults: UserDefaults,
+    key: String,
+    default defaultValue: Double,
+    range: ClosedRange<Double>
+) -> Double {
+    guard let value = defaults.object(forKey: key) as? Double, value.isFinite else {
+        return defaultValue
+    }
+    return min(max(value, range.lowerBound), range.upperBound)
+}
+
 final class AppController: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var handDetected = false
@@ -176,11 +188,11 @@ final class AppController: ObservableObject {
             controlMode = .trackpad
         }
 
-        sensitivity = storedDefaults.object(forKey: Keys.sensitivity) as? Double ?? 0.55
-        cooldown = storedDefaults.object(forKey: Keys.cooldown) as? Double ?? 0.85
-        pointerSensitivity = storedDefaults.object(forKey: Keys.pointerSensitivity) as? Double ?? 1.0
-        scrollSensitivity = storedDefaults.object(forKey: Keys.scrollSensitivity) as? Double ?? 1.0
-        scrollInertia = storedDefaults.object(forKey: Keys.scrollInertia) as? Double ?? 0.72
+        sensitivity = storedFiniteDouble(storedDefaults, key: Keys.sensitivity, default: 0.55, range: 0...1)
+        cooldown = storedFiniteDouble(storedDefaults, key: Keys.cooldown, default: 0.85, range: 0.20...2.50)
+        pointerSensitivity = storedFiniteDouble(storedDefaults, key: Keys.pointerSensitivity, default: 1.0, range: 0.35...2.50)
+        scrollSensitivity = storedFiniteDouble(storedDefaults, key: Keys.scrollSensitivity, default: 1.0, range: 0.35...2.50)
+        scrollInertia = storedFiniteDouble(storedDefaults, key: Keys.scrollInertia, default: 0.72, range: 0...1)
         // V1.1.1: 默认关闭键盘模拟缩放，避免双指滚动误触 Command +/-。
         twoFingerZoomEnabled = storedDefaults.object(forKey: Keys.twoFingerZoomEnabled) as? Bool ?? false
         // V1.1.2: 默认开启滚动回收抑制，避免主运动结束后收手被识别为反向滚动。
@@ -189,9 +201,22 @@ final class AppController: ObservableObject {
         // the pointer; open palm acts as clutch/recenter and an intentional pinch performs right-click.
         bimanualAssistEnabled = storedDefaults.object(forKey: Keys.bimanualAssistEnabled) as? Bool ?? false
         naturalScrolling = storedDefaults.object(forKey: Keys.naturalScrolling) as? Bool ?? true
-        trackingResponsiveness = storedDefaults.object(forKey: Keys.trackingResponsiveness) as? Double ?? 0.74
-        precisionAssist = storedDefaults.object(forKey: Keys.precisionAssist) as? Double ?? 0.68
-        let storedPalmScale = storedDefaults.object(forKey: Keys.personalPalmScale) as? Double
+        trackingResponsiveness = storedFiniteDouble(
+            storedDefaults,
+            key: Keys.trackingResponsiveness,
+            default: 0.74,
+            range: 0...1
+        )
+        precisionAssist = storedFiniteDouble(
+            storedDefaults,
+            key: Keys.precisionAssist,
+            default: 0.68,
+            range: 0...1
+        )
+        let rawPalmScale = storedDefaults.object(forKey: Keys.personalPalmScale) as? Double
+        let storedPalmScale = rawPalmScale.flatMap { value in
+            value.isFinite && value > 0.001 ? value : nil
+        }
         personalPalmScale = storedPalmScale
         calibrationProgress = storedPalmScale == nil ? 0 : 1
 

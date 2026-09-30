@@ -40,7 +40,9 @@ final class StaticGestureEngine {
         lock.lock()
         defer { lock.unlock() }
 
-        guard timestamp.isFinite, confidence.isFinite else { return }
+        guard timestamp.isFinite,
+              confidence.isFinite,
+              (0...1).contains(confidence) else { return }
         guard timestamp > lastAcceptedTimestamp else { return }
         lastAcceptedTimestamp = timestamp
 

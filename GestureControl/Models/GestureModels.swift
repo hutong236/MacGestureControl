@@ -187,8 +187,8 @@ enum KeyActionPreset: String, CaseIterable, Codable, Identifiable {
 struct GestureBindings: Codable, Equatable {
     var left: KeyActionPreset = .leftArrow
     var right: KeyActionPreset = .rightArrow
-    var up: KeyActionPreset = .upArrow
-    var down: KeyActionPreset = .downArrow
+    var up: KeyActionPreset = .pageUp
+    var down: KeyActionPreset = .pageDown
 
     subscript(direction: GestureDirection) -> KeyActionPreset {
         get {

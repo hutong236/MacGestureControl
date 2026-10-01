@@ -17,6 +17,12 @@ final class TrackpadController {
     func movePointer(deltaX: Double, deltaY: Double) {
         guard deltaX.isFinite, deltaY.isFinite else { return }
 
+        // The gesture engine normally caps 120Hz deltas near 21 px, but the system-event boundary
+        // must remain safe even if a future caller bypasses that invariant with a huge finite value.
+        let maximumPointerDelta = 240.0
+        let safeDeltaX = min(max(deltaX, -maximumPointerDelta), maximumPointerDelta)
+        let safeDeltaY = min(max(deltaY, -maximumPointerDelta), maximumPointerDelta)
+
         let now = ProcessInfo.processInfo.systemUptime
         var shouldProbe = false
         var base: CGPoint?
@@ -52,7 +58,12 @@ final class TrackpadController {
             lock.unlock()
             return
         }
-        let target = CGPoint(x: currentBase.x + deltaX, y: currentBase.y + deltaY)
+        let target = CGPoint(x: currentBase.x + safeDeltaX, y: currentBase.y + safeDeltaY)
+        guard target.x.isFinite, target.y.isFinite else {
+            virtualPointer = nil
+            lock.unlock()
+            return
+        }
         virtualPointer = target
         dragging = leftButtonDown
         lock.unlock()
@@ -78,6 +89,7 @@ final class TrackpadController {
 
         guard let probe = CGEvent(source: nil) else { return }
         let location = probe.location
+        guard location.x.isFinite, location.y.isFinite else { return }
         let type: CGEventType = down ? .leftMouseDown : .leftMouseUp
         guard let event = CGEvent(
             mouseEventSource: nil,
@@ -101,6 +113,7 @@ final class TrackpadController {
     func rightClick() {
         guard let probe = CGEvent(source: nil) else { return }
         let location = probe.location
+        guard location.x.isFinite, location.y.isFinite else { return }
         guard let down = CGEvent(
             mouseEventSource: nil,
             mouseType: .rightMouseDown,

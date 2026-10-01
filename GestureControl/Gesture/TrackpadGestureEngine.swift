@@ -1441,24 +1441,34 @@ final class TrackpadGestureEngine {
               sample.pointerY.isFinite,
               sample.scrollX.isFinite,
               sample.scrollY.isFinite,
+              abs(sample.centerX) <= 4,
+              abs(sample.centerY) <= 4,
+              abs(sample.pointerX) <= 4,
+              abs(sample.pointerY) <= 4,
+              abs(sample.scrollX) <= 4,
+              abs(sample.scrollY) <= 4,
               sample.pointerObservationConfidence.isFinite,
+              (0...1).contains(sample.pointerObservationConfidence),
               sample.scrollObservationConfidence.isFinite,
+              (0...1).contains(sample.scrollObservationConfidence),
               sample.processingLatency.isFinite,
               sample.processingLatency >= 0,
-              sample.confidence.isFinite else {
+              sample.processingLatency <= 2.0,
+              sample.confidence.isFinite,
+              (0...1).contains(sample.confidence) else {
             return false
         }
 
         if let palmScale = sample.palmScale,
-           !palmScale.isFinite || palmScale <= 0 {
+           !palmScale.isFinite || palmScale <= 0 || palmScale > 4 {
             return false
         }
         if let pinchRatio = sample.pinchRatio,
-           !pinchRatio.isFinite || pinchRatio < 0 {
+           !pinchRatio.isFinite || pinchRatio < 0 || pinchRatio > 16 {
             return false
         }
         if let twoFingerSpan = sample.twoFingerSpan,
-           !twoFingerSpan.isFinite || twoFingerSpan < 0 {
+           !twoFingerSpan.isFinite || twoFingerSpan < 0 || twoFingerSpan > 16 {
             return false
         }
         return true

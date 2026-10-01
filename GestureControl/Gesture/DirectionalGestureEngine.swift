@@ -4,6 +4,7 @@ import Foundation
 ///
 /// V1.2 增加“单次笔画 + 回程抑制”：一次方向手势触发后，原路收手不会再被识别成
 /// 反方向动作。只有手势被明确释放/重置，或检测到回程后停稳，才重新武装。
+/// V1.3.2 对方向笔画增加短窗口一致性判定，抑制上下往返抖动被误判成翻页。
 final class DirectionalGestureEngine {
     struct Configuration: Equatable {
         var minimumDistance: Double = 0.18
@@ -14,6 +15,9 @@ final class DirectionalGestureEngine {
         var historyDuration: TimeInterval = 0.95
         var cooldown: TimeInterval = 0.85
         var minimumConfidence: Double = 0.45
+        var minimumDirectionalConsistency: Double = 0.68
+        var directionNoiseTolerance: Double = 0.004
+        var minimumConsistentSegments: Int = 2
         var returnSuppressionEnabled: Bool = true
         var returnDeltaThreshold: Double = 0.0025
         var returnNeutralSpeed: Double = 0.055
@@ -121,12 +125,18 @@ final class DirectionalGestureEngine {
         guard distance >= configuration.minimumDistance,
               velocity >= configuration.minimumVelocity else { return }
 
+        var candidate: GestureDirection?
         if absX >= configuration.minimumDistance,
            absX > absY * configuration.dominanceRatio {
-            detected = dx > 0 ? .right : .left
+            candidate = dx > 0 ? .right : .left
         } else if absY >= configuration.minimumDistance,
                   absY > absX * configuration.dominanceRatio {
-            detected = dy > 0 ? .up : .down
+            candidate = dy > 0 ? .up : .down
+        }
+
+        if let candidate,
+           isDirectionallyConsistent(from: start, through: sample, direction: candidate) {
+            detected = candidate
         }
 
         if let detected {
@@ -188,6 +198,62 @@ final class DirectionalGestureEngine {
         } else if speed > configuration.returnNeutralSpeed {
             neutralSince = nil
         }
+    }
+
+    /// V1.3.2 directional consistency: compare forward travel with reverse travel inside the exact
+    /// candidate stroke window. Tiny per-frame movement is treated as tracking noise instead of a
+    /// reversal. This prevents a hand that repeatedly bounces up/down from eventually accumulating
+    /// enough net displacement to become an accidental page gesture.
+    private func isDirectionallyConsistent(
+        from start: HandSample,
+        through current: HandSample,
+        direction: GestureDirection
+    ) -> Bool {
+        let noiseTolerance = max(configuration.directionNoiseTolerance, 0)
+        let requiredSegments = max(configuration.minimumConsistentSegments, 1)
+        let requiredConsistency = min(max(configuration.minimumDirectionalConsistency, 0), 1)
+
+        var previous: HandSample?
+        var forwardTravel = 0.0
+        var reverseTravel = 0.0
+        var forwardSegments = 0
+
+        for sample in samples {
+            guard sample.timestamp >= start.timestamp,
+                  sample.timestamp <= current.timestamp else { continue }
+
+            guard let prior = previous else {
+                previous = sample
+                continue
+            }
+
+            let dx = sample.x - prior.x
+            let dy = sample.y - prior.y
+            let signedDelta: Double
+            switch direction {
+            case .right: signedDelta = dx
+            case .left: signedDelta = -dx
+            case .up: signedDelta = dy
+            case .down: signedDelta = -dy
+            }
+
+            if signedDelta > noiseTolerance {
+                forwardTravel += signedDelta
+                forwardSegments += 1
+            } else if signedDelta < -noiseTolerance {
+                reverseTravel += -signedDelta
+            }
+
+            previous = sample
+        }
+
+        guard forwardSegments >= requiredSegments else { return false }
+        let totalTravel = forwardTravel + reverseTravel
+        guard totalTravel > 0 else { return false }
+
+        let netForwardTravel = max(forwardTravel - reverseTravel, 0)
+        let consistency = netForwardTravel / totalTravel
+        return consistency + 1e-9 >= requiredConsistency
     }
 
     /// 不直接使用 history 中最老的点。选取 0.12~0.85 秒范围内距离当前点最远的候选起点，

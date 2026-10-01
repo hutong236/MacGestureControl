@@ -2,6 +2,62 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+/// Filters duplicate/rebound click transitions at the final system-event boundary.
+///
+/// The Vision gesture engine already performs pinch arming/debounce. This second, deliberately tiny
+/// state gate protects against release-shape rebound producing an immediate second mouseDown while
+/// preserving the first click and normal drag latency.
+struct SelectionGestureGate {
+    let minimumRearmInterval: TimeInterval
+
+    private var lastAcceptedTimestamp: TimeInterval = -.infinity
+    private var lastReleaseTime: TimeInterval = -.infinity
+    private var suppressingBounce = false
+
+    init(minimumRearmInterval: TimeInterval = 0.090) {
+        self.minimumRearmInterval = max(minimumRearmInterval, 0)
+    }
+
+    /// Returns the button state that should actually be emitted, or nil when the transition should
+    /// be ignored. `actualDown` is supplied by TrackpadController so event-allocation failures do not
+    /// make this pure intent gate drift away from the real Core Graphics state.
+    mutating func filter(
+        requestedDown: Bool,
+        actualDown: Bool,
+        timestamp: TimeInterval
+    ) -> Bool? {
+        guard timestamp.isFinite, timestamp >= lastAcceptedTimestamp else { return nil }
+        lastAcceptedTimestamp = timestamp
+
+        if requestedDown {
+            guard !actualDown else { return nil }
+            guard !suppressingBounce else { return nil }
+
+            let elapsed = timestamp - lastReleaseTime
+            if elapsed + 1e-9 < minimumRearmInterval {
+                suppressingBounce = true
+                return nil
+            }
+            return true
+        }
+
+        if suppressingBounce {
+            suppressingBounce = false
+            return nil
+        }
+        guard actualDown else { return nil }
+        return false
+    }
+
+    mutating func markEmitted(down: Bool, at timestamp: TimeInterval) {
+        guard timestamp.isFinite else { return }
+        suppressingBounce = false
+        if !down {
+            lastReleaseTime = timestamp
+        }
+    }
+}
+
 /// 使用 macOS 公开 Core Graphics API 注入鼠标与像素级滚动事件。
 ///
 /// V0.5 延续“虚拟指针”累积：摄像头每次产生的亚像素位移不会因为系统坐标回读/量化而丢失，
@@ -11,6 +67,7 @@ final class TrackpadController {
     private var fractionalScrollX = 0.0
     private var fractionalScrollY = 0.0
     private var leftButtonDown = false
+    private var selectionGestureGate = SelectionGestureGate()
     private var virtualPointer: CGPoint?
     private var lastExternalPointerProbeTime: TimeInterval = 0
 
@@ -79,18 +136,23 @@ final class TrackpadController {
     }
 
     func setLeftButton(down: Bool) {
-        // Pinch recognition can report the same logical state repeatedly. Check the cached state
-        // before allocating Core Graphics probe/events, then verify again after probing in case a
-        // concurrent reset changed it.
+        let now = ProcessInfo.processInfo.systemUptime
+
+        // Keep the gate and actual button state under the same lock. In particular, a suppressed
+        // rebound mouseDown still needs to see the following mouseUp so the suppression latch clears.
         lock.lock()
-        let needsChange = leftButtonDown != down
+        let filteredDown = selectionGestureGate.filter(
+            requestedDown: down,
+            actualDown: leftButtonDown,
+            timestamp: now
+        )
         lock.unlock()
-        guard needsChange else { return }
+        guard let filteredDown else { return }
 
         guard let probe = CGEvent(source: nil) else { return }
         let location = probe.location
         guard location.x.isFinite, location.y.isFinite else { return }
-        let type: CGEventType = down ? .leftMouseDown : .leftMouseUp
+        let type: CGEventType = filteredDown ? .leftMouseDown : .leftMouseUp
         guard let event = CGEvent(
             mouseEventSource: nil,
             mouseType: type,
@@ -99,11 +161,12 @@ final class TrackpadController {
         ) else { return }
 
         lock.lock()
-        guard leftButtonDown != down else {
+        guard leftButtonDown != filteredDown else {
             lock.unlock()
             return
         }
-        leftButtonDown = down
+        leftButtonDown = filteredDown
+        selectionGestureGate.markEmitted(down: filteredDown, at: now)
         virtualPointer = location
         lock.unlock()
 

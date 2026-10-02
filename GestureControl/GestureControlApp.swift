@@ -2,7 +2,13 @@ import SwiftUI
 
 @main
 struct GestureControlApp: App {
-    @StateObject private var controller = AppController()
+    @StateObject private var controller: AppController
+
+    init() {
+        let controller = AppController()
+        _controller = StateObject(wrappedValue: controller)
+        GestureHUDWindowController.shared.bind(to: controller)
+    }
 
     var body: some Scene {
         MenuBarExtra {

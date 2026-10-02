@@ -40,6 +40,7 @@ require(coordinator.contains("1.0 / 60.0"), "60 Hz latched scroll cadence missin
 require(coordinator.contains("0.20"), "200 ms action freshness bound missing")
 require(coordinator.contains("zoomRepeatInterval"), "Bounded zoom repeat interval missing")
 require(coordinator.contains("onLeftButton?(false)"), "Latched drag final mouse-up missing")
+require(coordinator.contains("guard let button = lastLeftButton, button.down else { return nil }"), "Ongoing drag must remain latchable after its initial mouseDown ages past 200 ms")
 print("PASS: V1.4 latch coordinator source invariants")
 
 let app = read("GestureControl/AppController.swift")
@@ -55,6 +56,7 @@ require(app.contains("latchCoordinator.observeScroll"), "Scroll output is not ro
 require(app.contains("latchCoordinator.observeLeftButton"), "Drag output is not routed through latch coordinator")
 require(app.contains("latchCoordinator.observeZoomStep"), "Zoom output is not routed through latch coordinator")
 require(app.contains("latchCoordinator.reset()"), "Latch cleanup missing")
+require(app.contains("leftHandMissingSince = nil\n            leftHoldArmed = false\n            return"), "Idle left-hand loss must clear Hold arming before re-entry")
 require(!app.contains("辅助手张开"), "Retired open-palm clutch mapping still present")
 require(!app.contains("辅助手捏合 → 右键"), "Retired secondary-pinch right-click mapping still present")
 require(!app.contains("trackpad.rightClick()"), "Secondary pinch must no longer post right click")

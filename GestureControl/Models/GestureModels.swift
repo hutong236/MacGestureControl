@@ -8,6 +8,35 @@ struct HandSample: Equatable {
     let confidence: Double
 }
 
+enum Handedness: Equatable {
+    case left, right, unknown
+}
+
+enum LatchedAction: Equatable {
+    case scroll(deltaX: Double, deltaY: Double)
+    case drag
+    case zoom(step: Int)
+}
+
+enum LeftHoldState: Equatable {
+    case idle
+    case candidate(progress: Double)
+    case latched(LatchedAction)
+}
+
+enum GestureHUDMode: Equatable {
+    case idle, active, holdCandidate, latched
+}
+
+struct GestureHUDState: Equatable {
+    var mode: GestureHUDMode
+    var leftHandText: String
+    var rightHandText: String
+    var actionText: String
+    var holdProgress: Double?
+    var isLocked: Bool
+}
+
 enum ControlMode: String, CaseIterable, Codable, Identifiable {
     case trackpad
     case page

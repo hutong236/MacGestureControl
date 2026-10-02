@@ -11,7 +11,7 @@ Add a two-hand interaction model in which the physical left hand acts as a modif
 The core interaction is:
 
 1. The right hand starts a continuous operation such as scroll, drag, or zoom.
-2. The left hand performs a thumb-index pinch and keeps it closed for approximately 300 ms.
+2. The left hand performs a thumb-index pinch and keeps it closed for 300 ms.
 3. The app latches the current continuous operation.
 4. The latched operation continues independently of the right-hand pose.
 5. The right hand is free to perform compatible follow-up operations.
@@ -77,8 +77,6 @@ This preserves existing tuned motion behavior while giving the new bimanual feat
 
 `HandPoseResult` will include a handedness value derived from `VNHumanHandPoseObservation.chirality`.
 
-Suggested model:
-
 ```swift
 enum Handedness: Equatable {
     case left
@@ -114,14 +112,14 @@ enum LeftHoldState: Equatable {
 
 Use palm-normalized thumb-index `pinchRatio` already produced by the detector.
 
-Initial thresholds:
+Fixed initial thresholds:
 
-- arm/open threshold: approximately `>= 0.58`;
-- pinch/closed threshold: approximately `<= 0.32`;
+- arm/open threshold: `>= 0.58`;
+- pinch/closed threshold: `<= 0.32`;
 - hold duration: `0.30 s`;
-- release threshold: approximately `>= 0.48`;
-- release debounce: `0.06–0.10 s`;
-- missing-left-hand safety release: approximately `0.25 s` of sustained loss.
+- release threshold: `>= 0.48`;
+- release debounce: `0.08 s`;
+- missing-left-hand safety release: `0.25 s` of sustained loss.
 
 These values reuse the scale and ranges already proven by the previous secondary-pinch logic, while changing the meaning from an immediate right-click to a deliberate hold gesture.
 
@@ -129,15 +127,15 @@ These values reuse the scale and ranges already proven by the previous secondary
 
 1. **Idle** — no valid left pinch.
 2. **Candidate** — left pinch is closed while a latchable right-hand action is active; HUD shows locking progress.
-3. **Latched** — after ~300 ms, snapshot the current latchable action and sustain it.
-4. **Release** — left pinch opens past release threshold and debounce; stop the sustained action.
-5. **Safety cancel** — sustained loss of left-hand tracking or app lifecycle reset cancels the latch.
+3. **Latched** — after 300 ms, snapshot the current latchable action and sustain it.
+4. **Release** — left pinch opens past the release threshold for 80 ms; stop the sustained action.
+5. **Safety cancel** — left hand is continuously missing for 250 ms, or an app lifecycle reset occurs; cancel the latch.
 
 A short pinch that does not reach the hold duration has no bimanual system action under this design. The old secondary-pinch right-click action is removed from the bimanual mapping.
 
 ## 6. Latchable Actions
 
-Only continuous operations can be latched.
+Only continuous operations can be latched. A continuous action snapshot must be no older than 200 ms at lock time; stale observations are not latchable.
 
 ### 6.1 Scroll
 
@@ -154,10 +152,10 @@ struct LatchedScroll {
 Behavior:
 
 - Capture the recent filtered scroll direction and magnitude at lock time.
-- Continue emitting scroll events at a stable cadence independent of subsequent right-hand pose.
+- Continue emitting scroll events at a 60 Hz cadence independent of subsequent right-hand pose.
 - Preserve natural-scrolling semantics already applied by the existing engine/output path.
 - Clamp speed to safe limits so a noisy final frame cannot produce runaway scrolling.
-- If the right hand later generates another scroll gesture, it may update the latched direction/speed only after a clear intentional movement; otherwise the latched stream continues unchanged.
+- If the right hand later produces a newly confirmed scroll intent while scroll is already latched, update the latched vector only after the existing scroll intent engine confirms that new direction; otherwise preserve the locked vector.
 - Right-hand pointer and compatible click interactions may continue while scroll remains latched.
 
 Primary target use case:
@@ -170,17 +168,17 @@ Behavior:
 
 - If the right hand is in an active drag when the left hold locks, keep the left mouse button logically down.
 - Right-hand pointer movement remains available so the object can continue moving.
-- Other actions that would conflict with an already-held left mouse button are suppressed until the latch is released.
+- Other actions that conflict with an already-held left mouse button are suppressed until the latch is released.
 - Release of the left pinch must always release the left mouse button.
-- Stop, crash/error cleanup, camera loss, or permission state changes must also release the button.
+- Stop, error cleanup, camera loss, mode change, or permission-related reset must also release the button.
 
 ### 6.3 Zoom
 
 Behavior:
 
 - Only available when the existing experimental two-finger zoom feature is enabled.
-- Capture the most recent confirmed zoom direction and safe pulse rate.
-- Continue producing zoom steps while latched.
+- Capture the most recent confirmed zoom direction.
+- Sustain zoom with a bounded repeating pulse cadence; never exceed the existing zoom pulse frequency limit.
 - Release stops the zoom stream immediately.
 
 ### 6.4 Non-latchable actions
@@ -202,8 +200,8 @@ Compatibility rules:
 
 | Latched action | Right-hand actions allowed while latched |
 | --- | --- |
-| Scroll | pointer, click, compatible drag initiation, intentional scroll adjustment |
-| Zoom | pointer, click, intentional zoom adjustment |
+| Scroll | pointer, click, compatible drag initiation, confirmed scroll adjustment |
+| Zoom | pointer, click, confirmed zoom adjustment |
 | Drag | pointer movement only; conflicting clicks/system actions suppressed |
 
 System-level swipes are not combined with a latch in the first implementation because they are discrete OS navigation actions and can conflict with continuous synthetic input.
@@ -233,11 +231,12 @@ final class BimanualLatchCoordinator {
 
 Implementation notes:
 
-- Serialize coordinator state to avoid races between Vision callbacks and the repeating output timer.
-- Use a bounded timer cadence for sustained scroll/zoom output.
-- Do not synthesize latch state from stale data; require recent action samples at latch time.
+- Serialize coordinator state to avoid races between Vision callbacks and repeating output timers.
+- Scroll latching uses a 60 Hz sustained-output timer.
+- Zoom latching uses a bounded pulse timer consistent with current zoom rate limits.
+- Do not synthesize latch state from stale data; require an action sample no older than 200 ms at latch time.
 - Capture action snapshots rather than replaying raw old frames.
-- Make release idempotent.
+- Make release and reset idempotent.
 
 ## 9. Transparent HUD
 
@@ -309,12 +308,11 @@ Release:
 
 ### Visibility
 
-- HUD is enabled by default when gesture control is running.
+- Add a persisted `显示透明 HUD` setting and default it to enabled.
+- HUD is shown while gesture control is running and the setting is enabled.
 - Active/candidate/latched states are clearly visible.
-- Idle state fades to a very subtle indicator or auto-hides after a short delay.
+- Idle state auto-hides after a short delay rather than occupying the screen continuously.
 - Stop/error state hides the HUD after reset.
-
-A settings toggle may be added to the existing menu panel so the user can disable the HUD without disabling gesture control.
 
 ## 10. AppController Integration
 
@@ -328,7 +326,7 @@ Changes:
 4. Route existing engine output callbacks through `BimanualLatchCoordinator` where needed.
 5. Keep pointer output direct unless a latched drag rule requires left-button arbitration.
 6. Publish a unified `GestureHUDState` on the main queue.
-7. Own/show/hide `GestureHUDWindowController` according to run state.
+7. Own/show/hide `GestureHUDWindowController` according to run state and HUD setting.
 8. On any reset path, release the latch before resetting trackpad state.
 
 Lifecycle cleanup must cover:
@@ -351,20 +349,20 @@ Remove/replace:
 - `辅助手捏合 → 右键`;
 - `双手辅助（离合 + 右键）` wording.
 
-New wording should explain:
+New wording explains:
 
 - right hand = primary operation;
-- left thumb-index pinch and hold ≈ 300 ms = lock current continuous action;
+- left thumb-index pinch and hold 300 ms = lock current continuous action;
 - release left pinch = stop lock;
 - latchable: scroll / drag / zoom;
 - transparent HUD shows current state.
 
-Suggested setting labels:
+Required setting labels:
 
 - `双手联动（左手 Hold 锁定）`
 - `显示透明 HUD`
 
-The existing `bimanualAssistEnabled` persisted key can be retained for migration compatibility even if its display semantics change.
+The existing `bimanualAssistEnabled` persisted key is retained for migration compatibility even though its display semantics change. Add a separate persisted HUD-enabled key that defaults to true.
 
 ## 12. Safety and Failure Handling
 
@@ -372,7 +370,7 @@ Critical invariants:
 
 1. There must never be a latched action when gesture processing is stopped.
 2. A latched drag must never leave the left mouse button down after release/reset/error.
-3. A lost left hand cannot cause indefinite scroll/zoom; sustained loss triggers release.
+3. A lost left hand cannot cause indefinite scroll/zoom; 250 ms sustained loss triggers release.
 4. Short left pinch noise must not latch an action.
 5. Unknown hand chirality must not be treated as a definite left hand for locking.
 6. Non-latchable right-hand actions must not inherit the previously latched continuous action.
@@ -386,10 +384,10 @@ Add a dedicated bimanual latch smoke test with at least these cases:
 
 1. scroll becomes latched after 300 ms left pinch hold;
 2. 100–250 ms pinch does not latch;
-3. release threshold ends scroll;
-4. left-hand dropout shorter than safety window does not flap state;
-5. sustained left-hand dropout releases latch;
-6. stale scroll samples cannot be latched;
+3. 80 ms release debounce ends scroll;
+4. left-hand dropout shorter than 250 ms does not flap state;
+5. sustained left-hand dropout of 250 ms releases latch;
+6. action samples older than 200 ms cannot be latched;
 7. latched drag guarantees mouse-up on release/reset;
 8. zoom cannot latch when zoom feature is disabled;
 9. discrete interactions cannot latch;
@@ -398,7 +396,9 @@ Add a dedicated bimanual latch smoke test with at least these cases:
 12. disabling bimanual mode clears latch;
 13. right-hand pointer output continues during a latched scroll;
 14. old open-palm clutch no longer activates;
-15. old left/secondary pinch no longer emits right-click.
+15. old left/secondary pinch no longer emits right-click;
+16. HUD window is configured click-through and non-activating;
+17. HUD disabled setting prevents HUD presentation without disabling gesture processing.
 
 ### Repository checks
 
@@ -443,11 +443,13 @@ Avoid unrelated refactoring.
 The feature is complete when all of the following are true:
 
 - With both hands visible, physical right hand remains the main operator and physical left hand is the Hold modifier.
-- Right-hand downward scrolling followed by left pinch hold keeps the page scrolling after the right hand changes pose.
-- Left pinch release stops the sustained scroll promptly.
+- Right-hand downward scrolling followed by a 300 ms left pinch hold keeps the page scrolling after the right hand changes pose.
+- Left pinch release stops the sustained scroll after the 80 ms release debounce.
+- Sustained left-hand tracking loss cannot keep scroll/zoom running beyond the 250 ms safety window.
 - Scroll, drag, and enabled zoom are latchable; discrete/system actions are not.
 - Old open-palm clutch and secondary-pinch right-click no longer override the new mapping.
 - HUD transparently displays current left/right/action/lock state without stealing focus or blocking clicks.
+- The HUD setting exists, defaults on, and can disable HUD presentation independently of gesture processing.
 - HUD works across normal Spaces and full-screen apps as permitted by macOS windowing behavior.
 - Stop/error/mode-change paths cannot leave continuous input or a mouse button stuck.
 - Existing single-hand and page-mode regression suites continue to pass.

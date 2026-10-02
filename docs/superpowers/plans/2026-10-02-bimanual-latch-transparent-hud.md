@@ -17,21 +17,21 @@
 - Physical right hand is the primary operation hand; physical left hand is the Hold/modifier hand when both are confidently identified.
 - Left pinch thresholds: arm/open `>= 0.58`, closed `<= 0.32`, hold `0.30 s`, release `>= 0.48` for `0.08 s`, missing-left safety release `0.25 s`.
 - Latchable action snapshot must be no older than `0.20 s`.
-- Scroll latch emits at `60 Hz`; each axis must stay within the existing engine safety envelope of `±22` pixels per source tick equivalent.
+- Scroll latch emits at `60 Hz`; effective speed must stay inside the existing engine envelope of `±22` px per 120 Hz source tick.
 - Zoom latch repeat interval must not be faster than the existing `0.030 s` zoom pulse limit.
 - Scroll, drag, and enabled zoom are latchable. Clicks, page actions, right-click, Back/Forward, Mission Control/App Exposé/Space switching are not.
-- Old `辅助手张开 → 离合` and `辅助手捏合 → 右键` behavior is superseded by this design.
-- Single-hand trackpad behavior and page mode must continue to work.
-- HUD is enabled by default, independently disableable, transparent, non-activating, and click-through.
-- Every stop/error/reset/mode-switch path must release any latched drag and stop repeating scroll/zoom output.
+- Old `辅助手张开 → 离合` and `辅助手捏合 → 右键` behavior is superseded.
+- Single-hand trackpad behavior and page mode remain supported.
+- HUD defaults on, can be disabled independently, is transparent, non-activating, and click-through.
+- Every stop/error/reset/mode-switch path releases a latched drag and stops repeating scroll/zoom output.
 
 ## Review Focus
 
-1. **Camera mirroring / hand identity:** Vision ordering or mirrored screen position must not swap left/right roles; unknown chirality must never arm Hold. Covered in Task 1 smoke checks and build verification.
-2. **Stale action reuse:** pinching after a scroll/zoom has already ended must not resurrect an old action older than 200 ms. Covered in Task 2.
-3. **Lifecycle races:** stop, camera error, mode switch, disabling bimanual mode, and repeated reset calls must never leave a timer running or mouse button down. Covered in Tasks 2 and 3.
-4. **Concurrent right-hand use:** a latched scroll must continue while the right hand returns to pointer/click behavior; a latched drag must suppress conflicting clicks/system gestures. Covered in Tasks 2 and 3.
-5. **HUD interference:** the HUD must not become key/main, intercept mouse events, or disappear in another Space/full-screen context; disabling HUD must not disable gesture processing. Covered in Task 4 source invariants and Debug/Release builds.
+1. **Camera mirroring / hand identity:** Vision ordering or image position must not swap left/right roles; unknown chirality never arms Hold. Task 1 + Task 3.
+2. **Stale action reuse:** pinching after scroll/zoom ended must not resurrect an action older than 200 ms. Task 2.
+3. **Lifecycle races:** stop, camera error, mode switch, bimanual disable, and repeated reset must not leave a timer or mouse button active. Tasks 2–3.
+4. **Concurrent right-hand use:** latched scroll continues while the right hand returns to pointer/click; latched drag suppresses conflicting actions. Tasks 2–3.
+5. **HUD interference:** HUD cannot become key/main, intercept mouse events, or vanish on Space/full-screen transitions; disabling HUD cannot disable gesture processing. Task 4.
 
 ---
 
@@ -43,51 +43,54 @@
 - Create: `scripts/v14_bimanual_latch_hud_smoke_test.swift`
 
 **Interfaces:**
-- Produces: `enum Handedness { case left, right, unknown }`
+- Produces: `enum Handedness: Equatable { case left, right, unknown }`
 - Produces: `enum LatchedAction: Equatable`
 - Produces: `enum LeftHoldState: Equatable`
 - Produces: `enum GestureHUDMode: Equatable`
 - Produces: `struct GestureHUDState: Equatable`
 - `HandPoseResult` gains `let handedness: Handedness`.
 
-- [ ] **Step 1: Write the failing v14 smoke assertions for model and handedness requirements**
+- [ ] **Step 1: Write failing v14 smoke assertions**
 
-The smoke file must source-check that `Handedness`, `LeftHoldState`, `GestureHUDState`, and `HandPoseResult.handedness` exist, and model unknown-handedness as non-lockable.
+The smoke test source-checks the new model names and `HandPoseResult.handedness`, and includes a tiny pure role model proving unknown-handedness is not a valid Hold hand.
 
-- [ ] **Step 2: Run the new smoke test and verify it fails**
+- [ ] **Step 2: Run the smoke test and confirm RED**
 
 Run: `xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift`
 
-Expected: FAIL because the new models/handedness field do not exist.
+Expected: FAIL because the models and handedness field do not exist.
 
-- [ ] **Step 3: Add the shared feature models**
+- [ ] **Step 3: Add shared models**
 
-In `GestureModels.swift`, add exact public-in-module types:
+Use these exact shapes:
 
 ```swift
 enum Handedness: Equatable { case left, right, unknown }
 enum LatchedAction: Equatable { case scroll(deltaX: Double, deltaY: Double); case drag; case zoom(step: Int) }
 enum LeftHoldState: Equatable { case idle; case candidate(progress: Double); case latched(LatchedAction) }
 enum GestureHUDMode: Equatable { case idle, active, holdCandidate, latched }
-struct GestureHUDState: Equatable { ... }
+struct GestureHUDState: Equatable {
+    var mode: GestureHUDMode
+    var leftHandText: String
+    var rightHandText: String
+    var actionText: String
+    var holdProgress: Double?
+    var isLocked: Bool
+}
 ```
-
-`GestureHUDState` fields are `mode`, `leftHandText`, `rightHandText`, `actionText`, `holdProgress`, and `isLocked` exactly as defined in the spec.
 
 - [ ] **Step 4: Add Vision chirality to `HandPoseResult`**
 
-Map `VNHumanHandPoseObservation.chirality` to `Handedness`; if chirality is unavailable/unknown, return `.unknown`. Do not infer handedness from x-position.
+Map `VNHumanHandPoseObservation.chirality` directly to `Handedness`; do not infer handedness from camera x-position or result order. Apple Vision exposes chirality specifically as pose handedness.
 
-- [ ] **Step 5: Run smoke test and Debug build**
-
-Run:
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift
 xcodebuild -project GestureControl.xcodeproj -scheme GestureControl -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
-Expected: both PASS.
+Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -105,7 +108,7 @@ git commit -m "feat: add bimanual handedness and HUD state models"
 - Modify: `scripts/v14_bimanual_latch_hud_smoke_test.swift`
 
 **Interfaces:**
-- Consumes: `TrackpadInteraction`, `LatchedAction` from Task 1.
+- Consumes: `TrackpadInteraction`, `LatchedAction`.
 - Produces:
 
 ```swift
@@ -119,6 +122,7 @@ final class BimanualLatchCoordinator {
     func observeScroll(deltaX: Double, deltaY: Double, timestamp: TimeInterval)
     func observeLeftButton(_ down: Bool, timestamp: TimeInterval)
     func observeZoomStep(_ step: Int, timestamp: TimeInterval)
+    func currentLatchableAction(timestamp: TimeInterval, zoomEnabled: Bool) -> LatchedAction?
     func latchCurrentAction(timestamp: TimeInterval, zoomEnabled: Bool) -> Bool
     func release(timestamp: TimeInterval)
     func reset()
@@ -126,36 +130,32 @@ final class BimanualLatchCoordinator {
 }
 ```
 
-- [ ] **Step 1: Extend v14 smoke coverage with latch lifecycle cases**
+`observeScroll`, `observeLeftButton`, and `observeZoomStep` are the single forwarding boundary: when no latch owns that channel they immediately call the matching output closure; callers must not separately emit the same event.
 
-Add cases for: fresh scroll latches; >200 ms scroll does not; drag keeps button down and releases on reset; zoom requires `zoomEnabled`; discrete/system interactions do not latch; release/reset are idempotent; repeating scroll uses 60 Hz semantics; scroll deltas are clamped to the existing `±22` source envelope.
+- [ ] **Step 1: Extend v14 with latch lifecycle tests**
 
-- [ ] **Step 2: Run the v14 smoke test and verify failure**
+Cover: fresh scroll latches; >200 ms scroll does not; drag keeps button down and releases on reset; zoom requires `zoomEnabled`; zoom snapshot normalizes to signed direction (`-1` or `+1`); discrete/system interactions do not latch; release/reset are idempotent; scroll timer semantics are 60 Hz; effective scroll speed stays within the existing `±22`/120 Hz envelope.
+
+- [ ] **Step 2: Run v14 and confirm RED**
 
 Run: `xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift`
 
-Expected: FAIL because coordinator source/API is missing.
+- [ ] **Step 3: Implement state and stale-action arbitration**
 
-- [ ] **Step 3: Implement coordinator state and stale-action arbitration**
-
-Use one private serial queue or lock for coordinator state. Record timestamps for the latest scroll, left-button transition, zoom step, and interaction. `latchCurrentAction` must choose only a currently relevant latchable action with age `<= 0.20 s`; it must never fall back to an older unrelated action.
+Serialize coordinator state with one private lock or serial queue. Record timestamps for the latest scroll, button state, zoom step, and interaction. `currentLatchableAction(...)` is read-only and returns only a current action with age `<= 0.20 s`; `latchCurrentAction(...)` uses that same selection logic and mutates latch state.
 
 - [ ] **Step 4: Implement sustained output**
 
-Scroll: use a `DispatchSourceTimer` at `60 Hz`; because source scroll callbacks come from the 120 Hz engine, emit `2 ×` the captured per-tick delta at 60 Hz, clamped so the equivalent speed never exceeds the engine's `±22` per 120 Hz tick envelope.
+Scroll: `DispatchSourceTimer` at 60 Hz. Since engine scroll output is 120 Hz, sustain the captured velocity equivalently (e.g. 2× the captured per-tick delta at 60 Hz) while clamping effective speed to the existing engine bound.
 
-Zoom: use a repeating timer with interval `>= 0.030 s` and emit one signed zoom step per pulse. Drag: no timer; keep logical left button down and suppress an observed engine mouse-up while latched.
+Zoom: repeat one signed step no faster than 30 ms. Drag: no repeating timer; keep logical left button down and suppress an engine mouse-up while drag is latched.
 
-- [ ] **Step 5: Verify coordinator invariants**
-
-Run:
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift
 xcrun swift scripts/v131_event_lifecycle_50x_smoke_test.swift
 ```
-
-Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -171,6 +171,7 @@ git commit -m "feat: add continuous gesture latch coordinator"
 **Files:**
 - Modify: `GestureControl/AppController.swift`
 - Modify: `GestureControl/Gesture/TrackpadGestureEngine.swift`
+- Modify: `scripts/v12_realtime_intent_smoke_test.swift`
 - Modify: `scripts/v14_bimanual_latch_hud_smoke_test.swift`
 
 **Interfaces:**
@@ -179,52 +180,50 @@ git commit -m "feat: add continuous gesture latch coordinator"
 - Produces: `@Published private(set) var hudState: GestureHUDState`
 - Keeps persisted key `trackpad.bimanualAssistEnabled.v1` for migration compatibility.
 
-- [ ] **Step 1: Add failing smoke assertions for the new left-hand Hold lifecycle**
+- [ ] **Step 1: Add failing Hold-state tests**
 
-Cover exact timings: 100–250 ms pinch does not latch; 300 ms does; release requires 80 ms above `0.48`; short left-hand dropout does not flap; 250 ms continuous loss releases; unknown handedness does not arm; old open-palm clutch and secondary-pinch right-click mapping are absent.
+Cover exact thresholds: 100–250 ms pinch does not latch; 300 ms does; release needs 80 ms above `0.48`; dropout <250 ms does not flap; 250 ms continuous loss releases; unknown handedness does not arm; old open-palm clutch and secondary-pinch right-click source paths are absent.
 
-- [ ] **Step 2: Run v14 and verify failure**
+- [ ] **Step 2: Run v14 and confirm RED**
 
 Run: `xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift`
 
-Expected: FAIL against current V1.2 auxiliary-hand code.
+- [ ] **Step 3: Replace hand-role assignment**
 
-- [ ] **Step 3: Replace role assignment**
+When both confidently identified hands exist, `.right` is primary and `.left` is modifier. Preserve temporal tracking only to stabilize reacquisition, not to override known chirality. With only one hand, preserve normal single-hand behavior; however, while a recent right-hand track exists, a lone left/unknown observation cannot immediately steal the primary pointer role.
 
-When both confident physical hands are present: choose `.right` as the primary pose and `.left` as the modifier pose. Preserve the existing temporal continuity fallback only for same-handedness reacquisition and single-hand operation; a lone `.unknown` or `.left` hand must not suddenly become the right-hand primary if a recent right-hand track exists.
+- [ ] **Step 4: Replace `updateBimanualAssist` with left pinch-hold state**
 
-- [ ] **Step 4: Replace `updateBimanualAssist` with left-pinch Hold state**
+Use `currentLatchableAction(...)` to decide whether a left pinch may enter `.candidate`. At 300 ms call `latchCurrentAction(...)`; do not call the mutating latch API during candidate probing. Release and 250 ms sustained loss call coordinator `release(...)` and return Hold state to `.idle`.
 
-Implement candidate/latch/release/dropout using the exact global thresholds. Candidate state is allowed only when `BimanualLatchCoordinator.latchCurrentAction(...)` would have a current latchable action. Releasing/losing the left hand calls coordinator release and returns to `.idle`.
+- [ ] **Step 5: Route outputs through coordinator exactly once**
 
-- [ ] **Step 5: Route engine outputs through the coordinator**
+- Pointer delta remains direct to `TrackpadController`.
+- Scroll callback only calls `latchCoordinator.observeScroll(...)`.
+- Left-button callback only calls `latchCoordinator.observeLeftButton(...)`; releases are still allowed during cleanup.
+- Zoom callback only calls `latchCoordinator.observeZoomStep(...)`.
+- Coordinator output closures call `trackpad.scroll`, `trackpad.setLeftButton`, and `handleZoom` respectively.
+- System swipes are ignored while an incompatible latch is active.
 
-- Pointer delta stays direct to `TrackpadController`.
-- Scroll delta calls `observeScroll`; coordinator forwards live scroll when not latched and owns repeated scroll while latched.
-- Left-button changes call `observeLeftButton`; coordinator suppresses mouse-up during a latched drag and always forwards final release.
-- Zoom steps call `observeZoomStep`; coordinator forwards live zoom and repeats only while latched.
-- System swipe handler returns without posting if a conflicting latch is active.
+- [ ] **Step 6: Remove obsolete external clutch support**
 
-- [ ] **Step 6: Remove the obsolete external clutch path**
+Delete `setExternalClutch(...)`, `externalClutchActive`, and related comments/branches from `TrackpadGestureEngine` once no callers remain. Do not alter single-hand scroll retraction, continuity fusion, pointer smoothing, or zoom arbitration.
 
-Remove `setExternalClutch(...)` and `externalClutchActive` from `TrackpadGestureEngine` once no caller remains. Keep all single-hand filtering, scroll retraction, continuity, and zoom arbitration logic unchanged.
+- [ ] **Step 7: Make cleanup exhaustive**
 
-- [ ] **Step 7: Make lifecycle cleanup exhaustive**
+Before trackpad reset on stop, camera error, control-mode change, bimanual disable, recognition reset, relaunch/quit: `latchCoordinator.reset()` and force final `trackpad.setLeftButton(down: false)`. Repeated reset/release is safe.
 
-Before `trackpadEngine.reset()` / `trackpad.resetMotionState()` on stop, camera error, mode change, bimanual disable, or recognition reset: call `latchCoordinator.reset()` and force `trackpad.setLeftButton(down: false)`. Repeated calls must be harmless.
-
-- [ ] **Step 8: Run focused regression tests**
-
-Run:
+- [ ] **Step 8: Verify focused regressions**
 
 ```bash
 xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift
 xcrun swift scripts/v12_realtime_intent_smoke_test.swift
 xcrun swift scripts/v131_event_lifecycle_50x_smoke_test.swift
 xcrun swift scripts/v132_selection_page_50x_smoke_test.swift
+xcodebuild -project GestureControl.xcodeproj -scheme GestureControl -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
-Expected: PASS. If `v12_realtime_intent_smoke_test.swift` still asserts the retired clutch behavior, replace only that obsolete section with a source invariant confirming it is intentionally removed; retain the scroll-retraction/identity coverage.
+If V1.2 smoke coverage contains the retired clutch model, replace only that obsolete section with a source invariant that confirms the clutch is intentionally gone; retain the other V1.2 coverage.
 
 - [ ] **Step 9: Commit**
 
@@ -235,16 +234,18 @@ git commit -m "feat: replace bimanual clutch with left-hand hold latch"
 
 ---
 
-### Task 4: Add transparent click-through HUD
+### Task 4: Add and wire the transparent HUD
 
 **Files:**
 - Create: `GestureControl/UI/GestureHUDView.swift`
 - Create: `GestureControl/UI/GestureHUDWindowController.swift`
 - Modify: `GestureControl/AppController.swift`
+- Modify: `GestureControl/UI/MenuBarPanel.swift`
+- Modify: `GestureControl.xcodeproj/project.pbxproj`
 - Modify: `scripts/v14_bimanual_latch_hud_smoke_test.swift`
 
 **Interfaces:**
-- Consumes: `GestureHUDState` from Task 1.
+- Consumes: `GestureHUDState`, `leftHoldState`.
 - Produces:
 
 ```swift
@@ -256,74 +257,35 @@ final class GestureHUDWindowController {
 }
 ```
 
-- [ ] **Step 1: Add failing HUD source-invariant tests**
+- [ ] **Step 1: Add failing HUD/UI/project tests**
 
-Require: transparent background, `isOpaque = false`, `ignoresMouseEvents = true`, non-activating panel style, `.canJoinAllSpaces`, `.fullScreenAuxiliary`, floating level, no key/main activation, and independent enable/disable state.
+Require: transparent background, `isOpaque = false`, `ignoresMouseEvents = true`, non-activating panel, `.canJoinAllSpaces`, `.fullScreenAuxiliary`, floating level, no key/main activation; exact labels `双手联动（左手 Hold 锁定）` and `显示透明 HUD`; absence of old helper-hand copy; all new source files registered in the Xcode Sources phase.
 
-- [ ] **Step 2: Run v14 and verify failure**
+- [ ] **Step 2: Run v14 and confirm RED**
 
 Run: `xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift`
-
-Expected: FAIL because HUD files do not exist.
 
 - [ ] **Step 3: Implement `GestureHUDView`**
 
-Render a compact one/two-line SwiftUI HUD using `ultraThinMaterial` or a very light translucent background. Candidate mode shows progress; latched mode shows a lock symbol and `Left: HOLD / Right: FREE`; idle content is subtle and eligible for auto-hide.
+Compact one/two-line SwiftUI layout with translucent material. Candidate shows Hold progress; latched shows lock + action + `Left: HOLD` + `Right: FREE`. Idle is subtle and auto-hides after a short delay.
 
 - [ ] **Step 4: Implement `GestureHUDWindowController`**
 
-Use a borderless non-activating `NSPanel`, transparent outer background, mouse passthrough, floating level, all-Spaces/full-screen collection behavior, and top-center placement on the active/main screen. All window mutations occur on the main queue.
+Borderless non-activating `NSPanel`; transparent outer background; mouse passthrough; floating window level; all-Spaces and full-screen auxiliary collection behavior; top-center placement on the active/main screen. Main-thread-only window mutation.
 
-- [ ] **Step 5: Integrate HUD lifecycle into `AppController`**
+- [ ] **Step 5: Add HUD setting/lifecycle in `AppController`**
 
-Add persisted `@Published var hudEnabled` with key `gesture.hudEnabled.v1`, default `true`. Update HUD on main when interaction/hold/latch state changes. `stop`, error, and disabled setting hide the panel without affecting processing.
+Add `@Published var hudEnabled`, persisted at `gesture.hudEnabled.v1`, default `true`. Show/update only while running and enabled. Stop/error/disable hides HUD but never stops gesture processing just because HUD is disabled.
 
-- [ ] **Step 6: Run v14 and Debug build**
+- [ ] **Step 6: Update `MenuBarPanel` copy and status**
 
-Run:
+Replace old clutch/right-click guide with right-hand primary + left Pinch Hold 300 ms guidance; add HUD toggle; preview status shows Hold candidate/Locked rather than clutch state.
 
-```bash
-xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift
-xcodebuild -project GestureControl.xcodeproj -scheme GestureControl -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
-```
+- [ ] **Step 7: Register sources in `project.pbxproj`**
 
-Expected: PASS after project file registration in Task 5; before Task 5, a compile failure for missing source registration is acceptable and is the handoff signal to Task 5.
+Add `BimanualLatchCoordinator.swift`, `GestureHUDView.swift`, and `GestureHUDWindowController.swift` to PBXFileReference, PBXBuildFile, Sources group, and Sources build phase. Do not alter deployment target or version settings.
 
-- [ ] **Step 7: Commit**
-
-Commit after Task 5 registers the new files so the branch does not contain a knowingly unbuildable intermediate commit.
-
----
-
-### Task 5: Update menu UI and Xcode project registration
-
-**Files:**
-- Modify: `GestureControl/UI/MenuBarPanel.swift`
-- Modify: `GestureControl.xcodeproj/project.pbxproj`
-- Modify: `scripts/v14_bimanual_latch_hud_smoke_test.swift`
-
-**Interfaces:**
-- Consumes: `controller.leftHoldState`, `controller.hudEnabled`, `controller.hudState`.
-
-- [ ] **Step 1: Add failing UI copy/project-registration checks**
-
-Require the exact setting labels `双手联动（左手 Hold 锁定）` and `显示透明 HUD`; reject old text `双手辅助（离合 + 右键）`, `辅助手张开`, and `辅助手捏合`; require all new Swift files to appear in the Sources build phase.
-
-- [ ] **Step 2: Run v14 and verify failure**
-
-Run: `xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift`
-
-- [ ] **Step 3: Update MenuBarPanel**
-
-Replace old helper-hand guide rows with: right hand = main operation; left thumb-index pinch hold 300 ms = lock current continuous action; left release = unlock; latchable operations = scroll/drag/zoom. Add the HUD toggle. Replace preview overlay clutch text with left Hold/Locked state.
-
-- [ ] **Step 4: Register new Swift sources in `project.pbxproj`**
-
-Add `BimanualLatchCoordinator.swift`, `GestureHUDView.swift`, and `GestureHUDWindowController.swift` to PBXFileReference, PBXBuildFile, Sources group, and Sources build phase. Keep deployment/version settings unchanged.
-
-- [ ] **Step 5: Run smoke test and Debug build**
-
-Run:
+- [ ] **Step 8: Verify GREEN**
 
 ```bash
 xcrun swift scripts/v14_bimanual_latch_hud_smoke_test.swift
@@ -332,7 +294,7 @@ xcodebuild -project GestureControl.xcodeproj -scheme GestureControl -configurati
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Tasks 4–5 together**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add GestureControl/UI/GestureHUDView.swift GestureControl/UI/GestureHUDWindowController.swift GestureControl/AppController.swift GestureControl/UI/MenuBarPanel.swift GestureControl.xcodeproj/project.pbxproj scripts/v14_bimanual_latch_hud_smoke_test.swift
@@ -341,10 +303,10 @@ git commit -m "feat: add transparent gesture HUD"
 
 ---
 
-### Task 6: Full regression and CI-equivalent verification
+### Task 5: Full regression and CI-equivalent verification
 
 **Files:**
-- Modify only if verification exposes a feature-related regression.
+- Modify only if verification reveals a feature-related regression.
 
 **Interfaces:**
 - Final integration gate; no new API.
@@ -360,7 +322,7 @@ done
 
 Expected: all PASS.
 
-- [ ] **Step 2: Validate shell/plist invariants**
+- [ ] **Step 2: Validate scripts and plist**
 
 ```bash
 bash -n build_release.sh install_local.sh
@@ -403,10 +365,15 @@ xcodebuild \
 
 Expected: `** BUILD SUCCEEDED **`.
 
-- [ ] **Step 5: Manual acceptance pass on macOS hardware**
+- [ ] **Step 5: Manual hardware acceptance**
 
-Verify: right-hand downward scroll → left pinch hold for 300 ms → continuous down-scroll persists while right hand changes pose → left release stops; pointer remains usable during scroll latch; drag latch never leaves mouse down after release/Stop; HUD is click-through and visible in normal/full-screen Spaces; HUD toggle hides only the HUD.
+Verify on a Mac with camera/input permission:
+- right-hand downward scroll → left Pinch Hold 300 ms → scrolling continues while right hand changes pose → left release stops;
+- right-hand pointer/click remains usable during scroll latch;
+- drag latch never leaves mouse down after release or Stop;
+- left-hand loss >250 ms stops latch;
+- HUD does not capture clicks, works across normal/full-screen Spaces, and its toggle hides only the HUD.
 
-- [ ] **Step 6: Final commit if verification required fixes**
+- [ ] **Step 6: Commit only if verification required fixes**
 
-Use a focused `fix:` commit describing only the regression corrected.
+Use a focused `fix:` commit describing the regression corrected.

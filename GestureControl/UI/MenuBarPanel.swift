@@ -7,6 +7,7 @@ struct MenuBarPanel: View {
         return "V" + (version ?? "1.2")
     }()
     @ObservedObject var controller: AppController
+    @AppStorage("gesture.hudEnabled.v1") private var hudEnabled = true
     @State private var newGestureName = ""
     @State private var newGestureAction: KeyActionPreset = .space
     @State private var showPreview = false
@@ -40,7 +41,7 @@ struct MenuBarPanel: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(controller.handDetected ? "手部已检测 · \(controller.detectedHandCount) 只" : "等待手部")
                                 if controller.bimanualClutchActive {
-                                    Text("双手离合：重定位中")
+                                    Text("🔒 双手联动：左手 Hold 已锁定")
                                 }
                                 if let pattern = controller.currentFingerPattern {
                                     Text(pattern.shortDescription)
@@ -78,6 +79,7 @@ struct MenuBarPanel: View {
         .frame(width: 440, height: 790)
         .onAppear {
             controller.refreshPermissions()
+            GestureHUDWindowController.shared.setEnabled(hudEnabled)
         }
     }
 
@@ -225,13 +227,12 @@ struct MenuBarPanel: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 trackpadGuideRow("hand.point.up.left", "一根食指", "移动鼠标指针")
-                trackpadGuideRow("hand.pinch", "拇指 + 食指捏合", "按下 / 拖拽，松开即释放")
+                trackpadGuideRow("hand.pinch", "右手拇指 + 食指", "按下 / 拖拽，松开即释放")
                 trackpadGuideRow("hand.raised.fingers.spread", "食指 + 中指", "连续双向滚动，松手后带惯性")
                 trackpadGuideRow("arrow.up.left.and.arrow.down.right", "双指张开 / 合拢", "放大 / 缩小")
                 trackpadGuideRow("square.3.layers.3d", "三/四指左右滑", "切换桌面 / 全屏空间")
                 trackpadGuideRow("rectangle.3.group", "三/四指上 / 下滑", "Mission Control / App Exposé")
-                trackpadGuideRow("hand.raised.fill", "辅助手张开", "离合：主手自由回位，不产生任何页面/指针位移")
-                trackpadGuideRow("hand.tap", "辅助手捏合", "右键点击")
+                trackpadGuideRow("hand.pinch.fill", "左手拇指 + 食指 Hold", "保持 300ms 锁定当前右手连续操作")
             }
             .padding(10)
             .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
@@ -244,7 +245,6 @@ struct MenuBarPanel: View {
                     .monospacedDigit()
                     .frame(width: 46, alignment: .trailing)
             }
-
 
             HStack {
                 Text("精细稳定")
@@ -286,12 +286,22 @@ struct MenuBarPanel: View {
             Text("一次滚动确认方向后，反向收手只作为重定位，不产生反向页面位移；回到宽松的主轴回中区域并停稳约 65ms 后重新武装。也可短暂放松双指姿势，相当于触控板“抬指”。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Toggle("双手辅助（离合 + 右键）", isOn: $controller.bimanualAssistEnabled)
+
+            Toggle("双手联动（左手 Hold 锁定）", isOn: $controller.bimanualAssistEnabled)
             Text(controller.bimanualClutchActive
-                 ? "辅助手张开：离合已按住，主手可自由回到舒适位置。"
-                 : "第二只手张开可临时冻结并重定位主手；第二只手主动捏合执行右键。")
+                 ? "左手 Hold 已锁定当前连续操作；右手可继续执行兼容操作，松开左手捏合即可解除。"
+                 : "双手出现时右手负责操作；左手拇指 + 食指捏合保持 300ms 可锁定滚动、拖拽或已启用的缩放。")
                 .font(.caption2)
                 .foregroundStyle(controller.bimanualClutchActive ? Color.orange : Color.secondary)
+
+            Toggle("显示透明 HUD", isOn: $hudEnabled)
+                .onChange(of: hudEnabled) { enabled in
+                    GestureHUDWindowController.shared.setEnabled(enabled)
+                }
+            Text("HUD 在屏幕顶部透明显示左右手状态、当前操作和 Hold/Locked 状态；不会抢焦点或拦截点击。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
             Toggle("双指张合缩放（实验性）", isOn: $controller.twoFingerZoomEnabled)
             Text("默认关闭：双指上下/左右移动只滚动，不再误触页面 ⌘+ / ⌘- 缩放。")
                 .font(.caption2)
@@ -360,7 +370,7 @@ struct MenuBarPanel: View {
                     .controlSize(.small)
             }
 
-            Text("V1.2 采用实时意图分段：采集帧与 Vision 解耦并始终处理最新帧；滚动按单向笔画锁定，回收不反向带动页面；可选双手辅助提供类似真实触控板“抬指重定位”的离合语义。")
+            Text("V1.4 在实时意图引擎上加入双手锁存：右手继续负责主操作，左手 Pinch Hold 300ms 可锁定连续滚动/拖拽/缩放；透明 HUD 同步显示当前状态。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

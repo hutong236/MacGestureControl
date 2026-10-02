@@ -168,9 +168,9 @@ final class BimanualLatchCoordinator {
             return .scroll(deltaX: sample.deltaX, deltaY: sample.deltaY)
 
         case .dragging:
-            guard let button = lastLeftButton,
-                  button.down,
-                  isFresh(button.timestamp, relativeTo: timestamp) else { return nil }
+            // Drag is an ongoing logical state, not a one-shot sample. Once the engine reports
+            // dragging, an older mouseDown remains current until interaction/button state changes.
+            guard let button = lastLeftButton, button.down else { return nil }
             return .drag
 
         case .zooming:

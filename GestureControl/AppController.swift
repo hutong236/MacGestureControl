@@ -863,6 +863,7 @@ final class AppController: ObservableObject {
     private func handleMissingLeftHand(timestamp: TimeInterval) {
         guard leftHoldStateInternal != .idle else {
             leftHandMissingSince = nil
+            leftHoldArmed = false
             return
         }
         if leftHandMissingSince == nil { leftHandMissingSince = timestamp }

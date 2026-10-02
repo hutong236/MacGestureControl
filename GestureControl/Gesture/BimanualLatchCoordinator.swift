@@ -42,7 +42,11 @@ final class BimanualLatchCoordinator {
         lock.lock()
         lastScroll = (safeX, safeY, timestamp)
         if case .scroll = currentLatchedAction {
-            currentLatchedAction = .scroll(deltaX: safeX, deltaY: safeY)
+            // Keep cruise speed stable when the engine is only emitting release/coasting deltas.
+            // A confirmed new right-hand scroll interaction may intentionally adjust direction/speed.
+            if currentInteraction == .scrolling {
+                currentLatchedAction = .scroll(deltaX: safeX, deltaY: safeY)
+            }
             forwardLive = false
         }
         lock.unlock()
@@ -76,7 +80,9 @@ final class BimanualLatchCoordinator {
         lock.lock()
         lastZoom = (normalizedStep, timestamp)
         if case .zoom = currentLatchedAction {
-            currentLatchedAction = .zoom(step: normalizedStep)
+            if currentInteraction == .zooming {
+                currentLatchedAction = .zoom(step: normalizedStep)
+            }
             forwardLive = false
         }
         lock.unlock()

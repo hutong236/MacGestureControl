@@ -26,4 +26,13 @@ require(
 require(!hud.contains("precondition(Thread.isMainThread)"), "HUD presentation must not crash on a thread precondition")
 require(hud.contains("guard Thread.isMainThread else"), "HUD must defensively hop to the main queue")
 
-print("V1.4.1 HUD startup crash regression smoke test OK")
+// V1.4.2: the crash persists when the HUD actually becomes visible. Keep the floating window,
+// but remove the SwiftUI/AppKit hosting bridge from this critical runtime path. The HUD content
+// should be native AppKit so first presentation cannot fail inside NSHostingView/Material setup.
+require(!hud.contains("NSHostingView<GestureHUDView>"), "HUD runtime must not retain NSHostingView storage")
+require(!hud.contains("NSHostingView(rootView:"), "HUD runtime must not construct NSHostingView")
+require(hud.contains("NSVisualEffectView"), "HUD must retain a native translucent AppKit surface")
+require(hud.contains("NSTextField"), "HUD native labels missing")
+require(hud.contains("NSProgressIndicator"), "HUD native Hold progress missing")
+
+print("V1.4.2 HUD presentation crash regression smoke test OK")

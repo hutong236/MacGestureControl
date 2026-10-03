@@ -48,6 +48,10 @@ final class BimanualLatchCoordinator {
                 currentLatchedAction = .scroll(deltaX: safeX, deltaY: safeY)
             }
             forwardLive = false
+        } else if currentLatchedAction == .drag {
+            // A latched drag owns the left-button interaction. Only pointer movement is compatible;
+            // suppress scroll output until the left-hand Hold releases the drag.
+            forwardLive = false
         }
         lock.unlock()
 
@@ -83,6 +87,10 @@ final class BimanualLatchCoordinator {
             if currentInteraction == .zooming {
                 currentLatchedAction = .zoom(step: normalizedStep)
             }
+            forwardLive = false
+        } else if currentLatchedAction == .drag {
+            // Keep drag composition deterministic: while the button is logically held by the
+            // left-hand latch, keyboard zoom pulses are conflicting discrete output.
             forwardLive = false
         }
         lock.unlock()

@@ -1,10 +1,118 @@
 import AppKit
 import Combine
-import SwiftUI
 
 private final class GestureHUDPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+}
+
+/// Native AppKit content for the floating HUD.
+///
+/// Keep this runtime path out of SwiftUI hosting: the HUD is created while a menu-bar SwiftUI app
+/// is already processing camera/Vision callbacks, and the extra NSHostingView/Material bridge proved
+/// fragile on real hardware. NSVisualEffectView gives us the same translucent system appearance with
+/// a much smaller lifecycle surface.
+private final class GestureHUDContentView: NSVisualEffectView {
+    private let iconView = NSImageView()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let actionLabel = NSTextField(labelWithString: "")
+    private let progressIndicator = NSProgressIndicator()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        layer?.masksToBounds = true
+
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.contentTintColor = .labelColor
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        actionLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        actionLabel.textColor = .labelColor
+        actionLabel.lineBreakMode = .byTruncatingTail
+        actionLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        progressIndicator.style = .bar
+        progressIndicator.controlSize = .small
+        progressIndicator.isIndeterminate = false
+        progressIndicator.minValue = 0
+        progressIndicator.maxValue = 1
+        progressIndicator.isHidden = true
+        progressIndicator.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(iconView)
+        addSubview(statusLabel)
+        addSubview(actionLabel)
+        addSubview(progressIndicator)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 24),
+            iconView.heightAnchor.constraint(equalToConstant: 24),
+
+            statusLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
+            statusLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+
+            actionLabel.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+            actionLabel.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 3),
+            actionLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+
+            progressIndicator.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+            progressIndicator.topAnchor.constraint(equalTo: actionLabel.bottomAnchor, constant: 5),
+            progressIndicator.widthAnchor.constraint(equalToConstant: 230),
+            progressIndicator.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14)
+        ])
+    }
+
+    func update(with state: GestureHUDState) {
+        let symbolName: String
+        if state.isLocked {
+            symbolName = "lock.fill"
+        } else {
+            switch state.mode {
+            case .idle: symbolName = "hand.raised"
+            case .active: symbolName = "hand.point.up.left"
+            case .holdCandidate: symbolName = "hand.pinch"
+            case .latched: symbolName = "lock.fill"
+            }
+        }
+
+        iconView.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: state.actionText
+        )
+        statusLabel.stringValue = "\(state.leftHandText)    \(state.rightHandText)"
+        actionLabel.stringValue = state.actionText
+        actionLabel.font = .systemFont(ofSize: 13, weight: state.isLocked ? .semibold : .medium)
+
+        if let progress = state.holdProgress, state.mode == .holdCandidate {
+            progressIndicator.doubleValue = min(max(progress, 0), 1)
+            progressIndicator.isHidden = false
+        } else {
+            progressIndicator.doubleValue = 0
+            progressIndicator.isHidden = true
+        }
+    }
 }
 
 final class GestureHUDWindowController {
@@ -12,7 +120,7 @@ final class GestureHUDWindowController {
 
     private let defaultsKey = "gesture.hudEnabled.v1"
     private var panel: GestureHUDPanel?
-    private var hostingView: NSHostingView<GestureHUDView>?
+    private var hudContentView: GestureHUDContentView?
     private var cancellables = Set<AnyCancellable>()
     private var hideWorkItem: DispatchWorkItem?
     private var enabled = true
@@ -99,8 +207,8 @@ final class GestureHUDWindowController {
         }
 
         // Starting gesture control publishes `isRunning = true` before the first camera frame.
-        // Do not allocate/order an AppKit panel for that idle transition. The HUD is created lazily
-        // only after a real gesture becomes active, which also avoids startup-time window reentrancy.
+        // Stay dormant until a real interaction exists; this also keeps window creation out of the
+        // camera-start transition.
         switch state.mode {
         case .idle:
             panel?.orderOut(nil)
@@ -110,7 +218,7 @@ final class GestureHUDWindowController {
         }
 
         let panel = ensurePanel()
-        hostingView?.rootView = GestureHUDView(state: state)
+        hudContentView?.update(with: state)
         position(panel)
         panel.orderFrontRegardless()
     }
@@ -134,11 +242,11 @@ final class GestureHUDWindowController {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-        let hostingView = NSHostingView(rootView: GestureHUDView(state: state))
-        hostingView.frame = frame
-        panel.contentView = hostingView
+        let contentView = GestureHUDContentView(frame: frame)
+        contentView.update(with: state)
+        panel.contentView = contentView
 
-        self.hostingView = hostingView
+        self.hudContentView = contentView
         self.panel = panel
         return panel
     }

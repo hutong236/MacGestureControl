@@ -83,7 +83,13 @@ final class GestureHUDWindowController {
     }
 
     private func refreshPresentation() {
-        precondition(Thread.isMainThread)
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshPresentation()
+            }
+            return
+        }
+
         hideWorkItem?.cancel()
         hideWorkItem = nil
 
@@ -92,22 +98,21 @@ final class GestureHUDWindowController {
             return
         }
 
+        // Starting gesture control publishes `isRunning = true` before the first camera frame.
+        // Do not allocate/order an AppKit panel for that idle transition. The HUD is created lazily
+        // only after a real gesture becomes active, which also avoids startup-time window reentrancy.
+        switch state.mode {
+        case .idle:
+            panel?.orderOut(nil)
+            return
+        case .active, .holdCandidate, .latched:
+            break
+        }
+
         let panel = ensurePanel()
         hostingView?.rootView = GestureHUDView(state: state)
         position(panel)
-
-        switch state.mode {
-        case .idle:
-            panel.orderFrontRegardless()
-            let item = DispatchWorkItem { [weak self] in
-                guard let self, self.state.mode == .idle else { return }
-                self.panel?.orderOut(nil)
-            }
-            hideWorkItem = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4, execute: item)
-        case .active, .holdCandidate, .latched:
-            panel.orderFrontRegardless()
-        }
+        panel.orderFrontRegardless()
     }
 
     private func ensurePanel() -> GestureHUDPanel {

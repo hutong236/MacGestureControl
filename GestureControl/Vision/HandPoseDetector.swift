@@ -16,6 +16,7 @@ struct HandPoseResult {
     let fingerPattern: FingerPattern?
     let pinchRatio: Double?
     let twoFingerSpan: Double?
+    let handedness: Handedness
 }
 
 final class HandPoseDetector {
@@ -164,6 +165,15 @@ final class HandPoseDetector {
         }
 
         let pattern = makeFingerPattern(points)
+        let handedness: Handedness
+        switch observation.chirality {
+        case .left:
+            handedness = .left
+        case .right:
+            handedness = .right
+        default:
+            handedness = .unknown
+        }
 
         return HandPoseResult(
             centerX: centerX,
@@ -178,7 +188,8 @@ final class HandPoseDetector {
             confidence: confidence,
             fingerPattern: pattern,
             pinchRatio: pinchRatio,
-            twoFingerSpan: twoFingerSpan
+            twoFingerSpan: twoFingerSpan,
+            handedness: handedness
         )
     }
 

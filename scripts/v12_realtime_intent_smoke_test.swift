@@ -116,7 +116,7 @@ t += 1.0/30.0
 precondition(opposite.observe(delta: 0.003, dt: 1.0/30.0, t: t))
 print("PASS: direction latch is symmetric")
 
-// Two-hand identity assignment remains stable even if Vision reverses result order.
+// Temporal hand assignment still preserves identity across Vision result ordering changes.
 struct Hand { let x: Double; let y: Double; let score: Double }
 func dist(_ h: Hand, _ p: (Double, Double)) -> Double { hypot(h.x-p.0, h.y-p.1) }
 func assign(_ a: Hand, _ b: Hand, primary: (Double,Double), secondary: (Double,Double)) -> (Hand,Hand) {
@@ -129,25 +129,22 @@ let result = assign(
     primary: (0.22, 0.50), secondary: (0.78, 0.52)
 )
 precondition(result.0.x < 0.5 && result.1.x > 0.5)
-print("PASS: two-hand identity survives Vision ordering changes")
+print("PASS: temporal hand identity survives Vision ordering changes")
 
-// Auxiliary clutch continuously rebases the main hand, so release has no jump.
-struct ClutchModel {
-    var active = false
-    var baseline = 0.0
-    mutating func process(position: Double) -> Double {
-        defer { baseline = position }
-        if active { return 0 }
-        return position - baseline
+// V1.4 supersedes the old open-palm clutch/right-click mapping with physical-left Pinch Hold.
+func read(_ path: String) -> String {
+    guard let data = FileManager.default.contents(atPath: path),
+          let text = String(data: data, encoding: .utf8) else {
+        fatalError("Unable to read \(path)")
     }
+    return text
 }
-var clutch = ClutchModel(active: false, baseline: 0.20)
-precondition(abs(clutch.process(position: 0.24) - 0.04) < 1e-9)
-clutch.active = true
-precondition(clutch.process(position: 0.50) == 0)
-precondition(clutch.process(position: 0.72) == 0)
-clutch.active = false
-precondition(abs(clutch.process(position: 0.73) - 0.01) < 1e-9)
-print("PASS: bimanual clutch rebases without release jump")
+let appSource = read("GestureControl/AppController.swift")
+precondition(appSource.contains("leftHoldDuration: TimeInterval = 0.30"))
+precondition(appSource.contains("leftReleaseDebounce: TimeInterval = 0.08"))
+precondition(appSource.contains("leftMissingReleaseDelay: TimeInterval = 0.25"))
+precondition(!appSource.contains("trackpadEngine.setExternalClutch"))
+precondition(!appSource.contains("trackpad.rightClick()"))
+print("PASS: legacy bimanual clutch/right-click mapping is retired")
 
-print("PASS: V1.2 real-time intent smoke suite")
+print("PASS: V1.2/V1.4 real-time intent smoke suite")

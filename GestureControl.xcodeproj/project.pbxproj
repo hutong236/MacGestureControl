@@ -20,6 +20,9 @@
 		83638D38234775937FEFABB0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CB0851E319AB751AAD3EB197 /* Assets.xcassets */; };
 		D1A1B2C3D4E5F60718293A4B /* TrackpadGestureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A1B2C3D4E5F60718293A4B /* TrackpadGestureEngine.swift */; };
 		D3A1B2C3D4E5F60718293A4B /* TrackpadController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A1B2C3D4E5F60718293A4B /* TrackpadController.swift */; };
+		E1A1B2C3D4E5F60718293A4B /* BimanualLatchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2A1B2C3D4E5F60718293A4B /* BimanualLatchCoordinator.swift */; };
+		E3A1B2C3D4E5F60718293A4B /* GestureHUDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4A1B2C3D4E5F60718293A4B /* GestureHUDView.swift */; };
+		E5A1B2C3D4E5F60718293A4B /* GestureHUDWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6A1B2C3D4E5F60718293A4B /* GestureHUDWindowController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +42,9 @@
 		38A007151ABE87CC01A5B6E9 /* GestureControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GestureControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2A1B2C3D4E5F60718293A4B /* TrackpadGestureEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GestureControl/Gesture/TrackpadGestureEngine.swift"; sourceTree = "<group>"; };
 		D4A1B2C3D4E5F60718293A4B /* TrackpadController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GestureControl/System/TrackpadController.swift"; sourceTree = "<group>"; };
+		E2A1B2C3D4E5F60718293A4B /* BimanualLatchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GestureControl/Gesture/BimanualLatchCoordinator.swift"; sourceTree = "<group>"; };
+		E4A1B2C3D4E5F60718293A4B /* GestureHUDView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GestureControl/UI/GestureHUDView.swift"; sourceTree = "<group>"; };
+		E6A1B2C3D4E5F60718293A4B /* GestureHUDWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GestureControl/UI/GestureHUDWindowController.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,11 +77,14 @@
 				801F3A6A294EE25F54C1031C /* HandPoseDetector.swift */,
 				24ED514441740ADC25ACAB5C /* DirectionalGestureEngine.swift */,
 				D2A1B2C3D4E5F60718293A4B /* TrackpadGestureEngine.swift */,
+				E2A1B2C3D4E5F60718293A4B /* BimanualLatchCoordinator.swift */,
 				6A04A9A57A272900C6404FCA /* StaticGestureEngine.swift */,
 				351A96DB52DA55FF7DFA4F0F /* KeyboardController.swift */,
 				D4A1B2C3D4E5F60718293A4B /* TrackpadController.swift */,
 				2412920A33EB024B6CBDFCC4 /* PermissionManager.swift */,
 				EA776E500F8244A858E41BD9 /* CameraPreviewView.swift */,
+				E4A1B2C3D4E5F60718293A4B /* GestureHUDView.swift */,
+				E6A1B2C3D4E5F60718293A4B /* GestureHUDWindowController.swift */,
 				813D0FF066AE3DB0DA82E65B /* MenuBarPanel.swift */,
 			);
 			name = Sources;
@@ -166,11 +175,14 @@
 				4591FCCDD4B9C8A56C9AA8A7 /* HandPoseDetector.swift in Sources */,
 				8E7A1A9CA68FEEB7B4ED0833 /* DirectionalGestureEngine.swift in Sources */,
 				D1A1B2C3D4E5F60718293A4B /* TrackpadGestureEngine.swift in Sources */,
+				E1A1B2C3D4E5F60718293A4B /* BimanualLatchCoordinator.swift in Sources */,
 				AF9030A26A77C45A2914AD1C /* StaticGestureEngine.swift in Sources */,
 				C7D0FE97A1C15D96AB989CB8 /* KeyboardController.swift in Sources */,
 				D3A1B2C3D4E5F60718293A4B /* TrackpadController.swift in Sources */,
 				A8745D4463B6881435FA4559 /* PermissionManager.swift in Sources */,
 				454CF15EA8988BFC3CC7ACA0 /* CameraPreviewView.swift in Sources */,
+				E3A1B2C3D4E5F60718293A4B /* GestureHUDView.swift in Sources */,
+				E5A1B2C3D4E5F60718293A4B /* GestureHUDWindowController.swift in Sources */,
 				4E90AE7B7944CA25276CA1BB /* MenuBarPanel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

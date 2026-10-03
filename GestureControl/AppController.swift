@@ -37,7 +37,17 @@ final class AppController: ObservableObject {
     @Published private(set) var lastRecoveryFrames = 0
     @Published private(set) var detectedHandCount = 0
     @Published private(set) var secondaryHandDetected = false
+    // Retained for source/UI compatibility; under V1.4 this means a continuous action is latched.
     @Published private(set) var bimanualClutchActive = false
+    @Published private(set) var leftHoldState: LeftHoldState = .idle
+    @Published private(set) var hudState = GestureHUDState(
+        mode: .idle,
+        leftHandText: "Left: Ready",
+        rightHandText: "Right: Ready",
+        actionText: "Gesture Ready",
+        holdProgress: nil,
+        isLocked: false
+    )
 
     @Published var customGestures: [CustomStaticGesture] {
         didSet {
@@ -113,10 +123,11 @@ final class AppController: ObservableObject {
             defaults.set(bimanualAssistEnabled, forKey: Keys.bimanualAssistEnabled)
             detector.setMaximumHandCount(bimanualAssistEnabled ? 2 : 1)
             if !bimanualAssistEnabled {
-                let now = ProcessInfo.processInfo.systemUptime
-                trackpadEngine.setExternalClutch(active: false, timestamp: now)
-                bimanualClutchState = false
+                latchCoordinator.reset()
+                clearLeftHoldTrackingState()
+                leftHoldState = .idle
                 bimanualClutchActive = false
+                updateHUDForInteraction(trackpadInteraction)
             }
         }
     }
@@ -152,6 +163,7 @@ final class AppController: ObservableObject {
     private let gestureEngine = DirectionalGestureEngine()
     private let staticGestureEngine = StaticGestureEngine()
     private let trackpadEngine = TrackpadGestureEngine()
+    private let latchCoordinator = BimanualLatchCoordinator()
     private let keyboard = KeyboardController()
     private let trackpad = TrackpadController()
     private let defaults = UserDefaults.standard
@@ -165,17 +177,18 @@ final class AppController: ObservableObject {
     private var hasRequestedAccessibilityThisLaunch = false
     private var activationObserver: NSObjectProtocol?
 
-    // V1.2 stable two-hand assignment. Vision result ordering is not a persistent identity.
+    // V1.4 physical two-hand roles. Right = operation hand; left = Hold modifier when both exist.
     private var primaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
     private var secondaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
-    private var secondaryOpenPalmSince: TimeInterval?
-    private var secondaryOpenPalmReleaseSince: TimeInterval?
-    private var secondaryPinchArmed = false
-    private var secondaryPinchCandidateSince: TimeInterval?
-    private var secondaryLastPinchRatio: Double?
-    private var secondaryLastPinchTimestamp: TimeInterval?
-    private var secondaryLastRightClickTime: TimeInterval = -.infinity
-    private var bimanualClutchState = false
+    private let leftHoldDuration: TimeInterval = 0.30
+    private let leftReleaseDebounce: TimeInterval = 0.08
+    private let leftMissingReleaseDelay: TimeInterval = 0.25
+    private var leftHoldArmed = false
+    private var leftHoldCandidateSince: TimeInterval?
+    private var leftHoldReleaseSince: TimeInterval?
+    private var leftHandMissingSince: TimeInterval?
+    private var leftHoldCandidateAction: LatchedAction?
+    private var leftHoldStateInternal: LeftHoldState = .idle
 
     init() {
         let storedDefaults = UserDefaults.standard
@@ -197,8 +210,7 @@ final class AppController: ObservableObject {
         twoFingerZoomEnabled = storedDefaults.object(forKey: Keys.twoFingerZoomEnabled) as? Bool ?? false
         // V1.1.2: 默认开启滚动回收抑制，避免主运动结束后收手被识别为反向滚动。
         scrollRetractionSuppressionEnabled = storedDefaults.object(forKey: Keys.scrollRetractionSuppressionEnabled) as? Bool ?? true
-        // V1.2: enable the conservative two-hand assistant by default. The second hand never becomes
-        // the pointer; open palm acts as clutch/recenter and an intentional pinch performs right-click.
+        // V1.4 keeps the persisted V1.2 key but changes the semantic to left-hand Pinch Hold latching.
         bimanualAssistEnabled = storedDefaults.object(forKey: Keys.bimanualAssistEnabled) as? Bool ?? false
         naturalScrolling = storedDefaults.object(forKey: Keys.naturalScrolling) as? Bool ?? true
         trackingResponsiveness = storedFiniteDouble(
@@ -242,6 +254,7 @@ final class AppController: ObservableObject {
             guard let self else { return }
             self.endProcessingSession()
             self.keyboard.cancelPendingEvents()
+            self.latchCoordinator.reset()
             self.trackpadEngine.reset()
             self.trackpad.setLeftButton(down: false)
             self.trackpad.resetMotionState()
@@ -249,6 +262,7 @@ final class AppController: ObservableObject {
                 self.lastError = message
                 self.isRunning = false
                 self.resetPublishedTrackingState()
+                self.resetHandAssignmentState()
             }
         }
 
@@ -261,6 +275,29 @@ final class AppController: ObservableObject {
         }
         staticGestureEngine.update(gestures: customGestures)
 
+        latchCoordinator.onScrollDelta = { [weak self] dx, dy in
+            guard let self, self.isProcessingActive() else { return }
+            self.trackpad.scroll(deltaX: dx, deltaY: dy)
+        }
+        latchCoordinator.onLeftButton = { [weak self] down in
+            guard let self else { return }
+            guard !down || self.isProcessingActive() else { return }
+            self.trackpad.setLeftButton(down: down)
+        }
+        latchCoordinator.onZoomStep = { [weak self] step in
+            self?.handleZoom(step)
+        }
+        latchCoordinator.onStateChanged = { [weak self] action in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                guard self.isProcessingActive() || action == nil else { return }
+                self.bimanualClutchActive = action != nil
+                if let action {
+                    self.lastActionText = "🔒 \(self.displayName(for: action))"
+                }
+            }
+        }
+
         // Hot path: do not call CGPreflightPostEventAccess at 120Hz. Permission is checked when
         // enabling/refreshing the app; posting without permission is harmlessly ignored by macOS.
         trackpadEngine.onPointerDelta = { [weak self] dx, dy in
@@ -269,19 +306,29 @@ final class AppController: ObservableObject {
         }
         trackpadEngine.onLeftButton = { [weak self] down in
             guard let self else { return }
-            // A release must always be allowed through so stop/error cleanup cannot strand a drag.
             guard !down || self.isProcessingActive() else { return }
-            self.trackpad.setLeftButton(down: down)
+            self.latchCoordinator.observeLeftButton(
+                down,
+                timestamp: ProcessInfo.processInfo.systemUptime
+            )
         }
         trackpadEngine.onScrollDelta = { [weak self] dx, dy in
             guard let self, self.isProcessingActive() else { return }
-            self.trackpad.scroll(deltaX: dx, deltaY: dy)
+            self.latchCoordinator.observeScroll(
+                deltaX: dx,
+                deltaY: dy,
+                timestamp: ProcessInfo.processInfo.systemUptime
+            )
         }
         trackpadEngine.onSystemSwipe = { [weak self] direction in
             self?.handleSystemSwipe(direction)
         }
         trackpadEngine.onZoomStep = { [weak self] step in
-            self?.handleZoom(step)
+            guard let self, self.isProcessingActive() else { return }
+            self.latchCoordinator.observeZoomStep(
+                step,
+                timestamp: ProcessInfo.processInfo.systemUptime
+            )
         }
         trackpadEngine.onCalibrationChanged = { [weak self] progress, baseline in
             guard let self else { return }
@@ -316,6 +363,7 @@ final class AppController: ObservableObject {
         trackpadEngine.onInteractionChanged = { [weak self] interaction in
             guard let self else { return }
             guard self.isProcessingActive() || interaction == .idle else { return }
+            self.latchCoordinator.observeInteraction(interaction)
             self.trackpadInteraction = interaction
             switch interaction {
             case .idle:
@@ -331,6 +379,7 @@ final class AppController: ObservableObject {
             case .systemSwipe:
                 self.lastActionText = "多指系统手势"
             }
+            self.updateHUDForInteraction(interaction)
         }
 
         activationObserver = NotificationCenter.default.addObserver(
@@ -347,6 +396,7 @@ final class AppController: ObservableObject {
     }
 
     deinit {
+        latchCoordinator.reset()
         if let activationObserver {
             NotificationCenter.default.removeObserver(activationObserver)
         }
@@ -395,6 +445,7 @@ final class AppController: ObservableObject {
         camera.stop()
         gestureEngine.reset()
         staticGestureEngine.reset()
+        latchCoordinator.reset()
         trackpadEngine.reset()
         trackpad.setLeftButton(down: false)
         trackpad.resetMotionState()
@@ -557,7 +608,8 @@ final class AppController: ObservableObject {
         if controlMode == .trackpad {
             updateBimanualAssist(secondaryPose, timestamp: timestamp)
         } else {
-            setBimanualClutch(false, timestamp: timestamp)
+            latchCoordinator.reset()
+            clearLeftHoldTrackingState()
         }
         guard isProcessingGenerationCurrent(generation) else { return }
 
@@ -642,7 +694,7 @@ final class AppController: ObservableObject {
         }
     }
 
-    // MARK: - V1.2 two-hand assignment / auxiliary controls
+    // MARK: - V1.4 two-hand assignment / left Pinch Hold
 
     private func assignHands(
         _ poses: [HandPoseResult],
@@ -658,14 +710,28 @@ final class AppController: ObservableObject {
         let recentWindow = 0.45
         let primaryRecent = primaryHandCenter.map { timestamp - $0.timestamp <= recentWindow } ?? false
         let secondaryRecent = secondaryHandCenter.map { timestamp - $0.timestamp <= recentWindow } ?? false
-
         var primary: HandPoseResult?
         var secondary: HandPoseResult?
 
-        if poses.count >= 2 {
+        if poses.count >= 2, bimanualAssistEnabled {
+            let right = poses.first { pose in pose.handedness == .right }
+            let left = poses.first { pose in pose.handedness == .left }
+
+            if let right, let left, right.centerX != left.centerX || right.centerY != left.centerY {
+                primary = right
+                secondary = left
+            } else if let right {
+                primary = right
+                secondary = poses.first { $0.centerX != right.centerX || $0.centerY != right.centerY }
+            } else if let left {
+                secondary = left
+                primary = poses.first { $0.centerX != left.centerX || $0.centerY != left.centerY }
+            }
+        }
+
+        if primary == nil, secondary == nil, poses.count >= 2 {
             let a = poses[0]
             let b = poses[1]
-
             if primaryRecent, secondaryRecent {
                 let direct = distance(a, primaryHandCenter) + distance(b, secondaryHandCenter)
                 let swapped = distance(b, primaryHandCenter) + distance(a, secondaryHandCenter)
@@ -681,15 +747,16 @@ final class AppController: ObservableObject {
                     primary = b; secondary = a
                 }
             } else {
-                // Prefer the hand that has the best usable pointer/scroll landmarks as the initial primary.
                 let scoreA = a.confidence + max(a.pointerObservationConfidence, a.scrollObservationConfidence) * 0.65
                 let scoreB = b.confidence + max(b.pointerObservationConfidence, b.scrollObservationConfidence) * 0.65
                 if scoreA >= scoreB { primary = a; secondary = b } else { primary = b; secondary = a }
             }
-        } else if let only = poses.first {
-            // If both identities were recently present, do not let a remaining auxiliary hand suddenly
-            // become the pointer when the primary hand leaves the camera.
-            if bimanualAssistEnabled, primaryRecent, secondaryRecent {
+        } else if poses.count == 1, let only = poses.first {
+            if bimanualAssistEnabled,
+               only.handedness == .left,
+               primaryRecent {
+                secondary = only
+            } else if bimanualAssistEnabled, primaryRecent, secondaryRecent {
                 let dp = distance(only, primaryHandCenter)
                 let ds = distance(only, secondaryHandCenter)
                 if ds + 0.045 < dp {
@@ -719,120 +786,148 @@ final class AppController: ObservableObject {
 
     private func updateBimanualAssist(_ secondary: HandPoseResult?, timestamp: TimeInterval) {
         guard bimanualAssistEnabled else {
-            setBimanualClutch(false, timestamp: timestamp)
-            resetSecondaryGestureState()
+            latchCoordinator.reset()
+            clearLeftHoldTrackingState()
+            publishLeftHoldState(.idle, candidateAction: nil)
             return
         }
 
-        guard let secondary, secondary.confidence >= 0.38 else {
-            secondaryOpenPalmSince = nil
-            secondaryPinchCandidateSince = nil
-            secondaryLastPinchRatio = nil
-            secondaryLastPinchTimestamp = nil
-            if bimanualClutchState {
-                if secondaryOpenPalmReleaseSince == nil { secondaryOpenPalmReleaseSince = timestamp }
-                if let since = secondaryOpenPalmReleaseSince, timestamp - since >= 0.10 {
-                    setBimanualClutch(false, timestamp: timestamp)
-                }
-            }
+        guard let secondary,
+              secondary.handedness == .left,
+              secondary.confidence >= 0.38,
+              let ratio = secondary.pinchRatio,
+              ratio.isFinite else {
+            handleMissingLeftHand(timestamp: timestamp)
             return
         }
 
-        let openPalm = secondary.fingerPattern?.isOpenPalmPose == true
-        if openPalm {
-            secondaryOpenPalmReleaseSince = nil
-            if secondaryOpenPalmSince == nil { secondaryOpenPalmSince = timestamp }
-            if let since = secondaryOpenPalmSince, timestamp - since >= 0.085 {
-                setBimanualClutch(true, timestamp: timestamp)
-            }
-        } else {
-            secondaryOpenPalmSince = nil
-            if bimanualClutchState {
-                if secondaryOpenPalmReleaseSince == nil { secondaryOpenPalmReleaseSince = timestamp }
-                if let since = secondaryOpenPalmReleaseSince, timestamp - since >= 0.060 {
-                    setBimanualClutch(false, timestamp: timestamp)
-                }
-            } else {
-                secondaryOpenPalmReleaseSince = nil
-            }
-        }
-
-        // Conservative secondary-hand pinch -> right click. It must first be visibly open, then close
-        // with intent, and is ignored while the clutch is active.
-        guard !bimanualClutchState, let ratio = secondary.pinchRatio, ratio.isFinite else {
-            secondaryPinchCandidateSince = nil
-            secondaryLastPinchRatio = secondary.pinchRatio
-            secondaryLastPinchTimestamp = timestamp
-            return
-        }
-
-        let closingSpeed: Double = {
-            guard let previousRatio = secondaryLastPinchRatio,
-                  let previousTime = secondaryLastPinchTimestamp else { return 0 }
-            let dt = timestamp - previousTime
-            guard dt > 0.012, dt < 0.20 else { return 0 }
-            return (previousRatio - ratio) / dt
-        }()
-        secondaryLastPinchRatio = ratio
-        secondaryLastPinchTimestamp = timestamp
+        leftHandMissingSince = nil
 
         if ratio >= 0.58 {
-            secondaryPinchArmed = true
-            secondaryPinchCandidateSince = nil
+            leftHoldArmed = true
         }
 
-        let intentionalClose = closingSpeed >= 0.16 || ratio <= 0.26
-        if secondaryPinchArmed, ratio <= 0.32, intentionalClose {
-            if secondaryPinchCandidateSince == nil { secondaryPinchCandidateSince = timestamp }
-            if let since = secondaryPinchCandidateSince,
-               timestamp - since >= 0.030,
-               timestamp - secondaryLastRightClickTime >= 0.45 {
-                secondaryPinchArmed = false
-                secondaryPinchCandidateSince = nil
-                secondaryLastRightClickTime = timestamp
-                if isProcessingActive(), PermissionManager.postEventAuthorized {
-                    trackpad.rightClick()
-                }
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.isProcessingActive() else { return }
-                    self.lastActionText = "双手辅助：辅助手捏合 → 右键"
-                }
+        switch leftHoldStateInternal {
+        case .idle:
+            leftHoldReleaseSince = nil
+            guard leftHoldArmed, ratio <= 0.32,
+                  let candidate = latchCoordinator.currentLatchableAction(
+                    timestamp: timestamp,
+                    zoomEnabled: twoFingerZoomEnabled
+                  ) else {
+                return
             }
-        } else if ratio > 0.38 {
-            secondaryPinchCandidateSince = nil
+            leftHoldCandidateSince = timestamp
+            leftHoldCandidateAction = candidate
+            publishLeftHoldState(.candidate(progress: 0), candidateAction: candidate)
+
+        case .candidate:
+            if ratio >= 0.48 {
+                cancelLeftHoldCandidate(rearm: ratio >= 0.58)
+                return
+            }
+            guard let since = leftHoldCandidateSince else {
+                cancelLeftHoldCandidate(rearm: false)
+                return
+            }
+            let progress = min(max((timestamp - since) / leftHoldDuration, 0), 1)
+            publishLeftHoldState(.candidate(progress: progress), candidateAction: leftHoldCandidateAction)
+            guard timestamp - since >= leftHoldDuration else { return }
+
+            if latchCoordinator.latchCurrentAction(timestamp: timestamp, zoomEnabled: twoFingerZoomEnabled),
+               let action = latchCoordinator.latchedAction {
+                leftHoldArmed = false
+                leftHoldCandidateSince = nil
+                leftHoldCandidateAction = nil
+                publishLeftHoldState(.latched(action), candidateAction: nil)
+            } else {
+                cancelLeftHoldCandidate(rearm: false)
+            }
+
+        case .latched:
+            if ratio >= 0.48 {
+                if leftHoldReleaseSince == nil { leftHoldReleaseSince = timestamp }
+                if let since = leftHoldReleaseSince,
+                   timestamp - since >= leftReleaseDebounce {
+                    latchCoordinator.release(timestamp: timestamp)
+                    clearLeftHoldTrackingState()
+                    leftHoldArmed = ratio >= 0.58
+                    publishLeftHoldState(.idle, candidateAction: nil)
+                }
+            } else {
+                leftHoldReleaseSince = nil
+            }
         }
     }
 
-    private func setBimanualClutch(_ active: Bool, timestamp: TimeInterval) {
-        guard bimanualClutchState != active else { return }
-        bimanualClutchState = active
-        trackpadEngine.setExternalClutch(active: active, timestamp: timestamp)
-        if active {
-            trackpad.resetScrollRemainder()
+    private func handleMissingLeftHand(timestamp: TimeInterval) {
+        guard leftHoldStateInternal != .idle else {
+            leftHandMissingSince = nil
+            leftHoldArmed = false
+            return
         }
+        if leftHandMissingSince == nil { leftHandMissingSince = timestamp }
+        guard let since = leftHandMissingSince,
+              timestamp - since >= leftMissingReleaseDelay else { return }
+        latchCoordinator.release(timestamp: timestamp)
+        clearLeftHoldTrackingState()
+        publishLeftHoldState(.idle, candidateAction: nil)
+    }
+
+    private func cancelLeftHoldCandidate(rearm: Bool) {
+        leftHoldCandidateSince = nil
+        leftHoldCandidateAction = nil
+        leftHoldReleaseSince = nil
+        leftHoldArmed = rearm
+        publishLeftHoldState(.idle, candidateAction: nil)
+    }
+
+    private func clearLeftHoldTrackingState() {
+        leftHoldArmed = false
+        leftHoldCandidateSince = nil
+        leftHoldReleaseSince = nil
+        leftHandMissingSince = nil
+        leftHoldCandidateAction = nil
+        leftHoldStateInternal = .idle
+    }
+
+    private func publishLeftHoldState(_ state: LeftHoldState, candidateAction: LatchedAction?) {
+        leftHoldStateInternal = state
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isProcessingActive() else { return }
-            self.bimanualClutchActive = active
-            self.lastActionText = active
-                ? "双手辅助：辅助手张开 → 离合重定位"
-                : "双手辅助：离合释放"
+            guard let self else { return }
+            self.leftHoldState = state
+            switch state {
+            case .idle:
+                self.bimanualClutchActive = false
+                self.updateHUDForInteraction(self.trackpadInteraction)
+            case let .candidate(progress):
+                let actionName = candidateAction.map(self.displayName(for:)) ?? self.trackpadInteraction.displayName
+                self.hudState = GestureHUDState(
+                    mode: .holdCandidate,
+                    leftHandText: "Left: HOLD \(Int(progress * 100))%",
+                    rightHandText: "Right: Active",
+                    actionText: "Locking \(actionName)",
+                    holdProgress: progress,
+                    isLocked: false
+                )
+            case let .latched(action):
+                self.bimanualClutchActive = true
+                self.hudState = GestureHUDState(
+                    mode: .latched,
+                    leftHandText: "Left: HOLD",
+                    rightHandText: "Right: FREE",
+                    actionText: self.displayName(for: action),
+                    holdProgress: 1,
+                    isLocked: true
+                )
+            }
         }
-    }
-
-    private func resetSecondaryGestureState() {
-        secondaryOpenPalmSince = nil
-        secondaryOpenPalmReleaseSince = nil
-        secondaryPinchArmed = false
-        secondaryPinchCandidateSince = nil
-        secondaryLastPinchRatio = nil
-        secondaryLastPinchTimestamp = nil
     }
 
     private func resetHandAssignmentState() {
         primaryHandCenter = nil
         secondaryHandCenter = nil
-        resetSecondaryGestureState()
-        bimanualClutchState = false
+        clearLeftHoldTrackingState()
     }
 
     private func handlePageGesture(_ direction: GestureDirection) {
@@ -872,6 +967,7 @@ final class AppController: ObservableObject {
     }
 
     private func handleSystemSwipe(_ direction: GestureDirection) {
+        guard latchCoordinator.latchedAction == nil else { return }
         guard isProcessingActive(), PermissionManager.postEventAuthorized else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isProcessingActive() else { return }
@@ -902,6 +998,36 @@ final class AppController: ObservableObject {
         }
     }
 
+    private func updateHUDForInteraction(_ interaction: TrackpadInteraction) {
+        switch leftHoldState {
+        case .candidate, .latched:
+            return
+        case .idle:
+            break
+        }
+        let mode: GestureHUDMode = interaction == .idle ? .idle : .active
+        hudState = GestureHUDState(
+            mode: mode,
+            leftHandText: bimanualAssistEnabled ? "Left: Ready" : "Left: Off",
+            rightHandText: interaction == .idle ? "Right: Ready" : "Right: Active",
+            actionText: interaction.displayName,
+            holdProgress: nil,
+            isLocked: false
+        )
+    }
+
+    private func displayName(for action: LatchedAction) -> String {
+        switch action {
+        case let .scroll(dx, dy):
+            if abs(dy) >= abs(dx) { return dy >= 0 ? "Scroll Down" : "Scroll Up" }
+            return dx >= 0 ? "Scroll Right" : "Scroll Left"
+        case .drag:
+            return "Drag"
+        case let .zoom(step):
+            return step > 0 ? "Zoom In" : "Zoom Out"
+        }
+    }
+
     private func resetPublishedTrackingState() {
         handDetected = false
         handConfidence = 0
@@ -920,6 +1046,15 @@ final class AppController: ObservableObject {
         detectedHandCount = 0
         secondaryHandDetected = false
         bimanualClutchActive = false
+        leftHoldState = .idle
+        hudState = GestureHUDState(
+            mode: .idle,
+            leftHandText: "Left: Ready",
+            rightHandText: "Right: Ready",
+            actionText: "Gesture Ready",
+            holdProgress: nil,
+            isLocked: false
+        )
     }
 
     private func resetRecognitionState() {
@@ -927,7 +1062,9 @@ final class AppController: ObservableObject {
         keyboard.cancelPendingEvents()
         gestureEngine.reset()
         staticGestureEngine.reset()
+        latchCoordinator.reset()
         trackpadEngine.reset()
+        trackpad.setLeftButton(down: false)
         trackpad.resetMotionState()
         lastGesture = nil
         lastActionText = controlMode == .trackpad ? "等待触控板手势" : "等待翻页手势"

@@ -12,6 +12,17 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else { fatalError(message) }
 }
 
+private func occurrences(of needle: String, in haystack: String) -> Int {
+    guard !needle.isEmpty else { return 0 }
+    var count = 0
+    var cursor = haystack.startIndex
+    while let range = haystack.range(of: needle, range: cursor..<haystack.endIndex) {
+        count += 1
+        cursor = range.upperBound
+    }
+    return count
+}
+
 let models = read("GestureControl/Models/GestureModels.swift")
 let detector = read("GestureControl/Vision/HandPoseDetector.swift")
 
@@ -41,6 +52,10 @@ require(coordinator.contains("0.20"), "200 ms action freshness bound missing")
 require(coordinator.contains("zoomRepeatInterval"), "Bounded zoom repeat interval missing")
 require(coordinator.contains("onLeftButton?(false)"), "Latched drag final mouse-up missing")
 require(coordinator.contains("guard let button = lastLeftButton, button.down else { return nil }"), "Ongoing drag must remain latchable after its initial mouseDown ages past 200 ms")
+require(
+    occurrences(of: "currentLatchedAction == .drag", in: coordinator) >= 3,
+    "Latched drag must suppress conflicting mouse-up, scroll, and zoom output"
+)
 print("PASS: V1.4 latch coordinator source invariants")
 
 let app = read("GestureControl/AppController.swift")

@@ -71,6 +71,8 @@ require(app.contains("latchCoordinator.observeScroll"), "Scroll output is not ro
 require(app.contains("latchCoordinator.observeLeftButton"), "Drag output is not routed through latch coordinator")
 require(app.contains("latchCoordinator.observeZoomStep"), "Zoom output is not routed through latch coordinator")
 require(app.contains("latchCoordinator.reset()"), "Latch cleanup missing")
+require(app.contains("updateBimanualAssist(secondaryPose, timestamp: processedTimestamp)"), "Hold/latch timing must share the system-uptime clock used by output snapshots")
+require(!app.contains("updateBimanualAssist(secondaryPose, timestamp: timestamp)"), "Capture timestamps must not be compared with output callback timestamps")
 require(app.contains("leftHandMissingSince = nil\n            leftHoldArmed = false\n            return"), "Idle left-hand loss must clear Hold arming before re-entry")
 require(!app.contains("辅助手张开"), "Retired open-palm clutch mapping still present")
 require(!app.contains("辅助手捏合 → 右键"), "Retired secondary-pinch right-click mapping still present")

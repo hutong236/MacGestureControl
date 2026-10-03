@@ -199,8 +199,11 @@ final class BimanualLatchCoordinator {
     }
 
     private func isFresh(_ sampleTimestamp: TimeInterval, relativeTo timestamp: TimeInterval) -> Bool {
-        let age = timestamp - sampleTimestamp
-        return age >= 0 && age <= actionFreshness
+        // Vision Hold timing is based on captured frame timestamps while motion callbacks are emitted
+        // on the live system-uptime clock. Their ordering can differ by normal inference latency, so
+        // freshness is a bounded distance between the two monotonic timestamps, not a strict ordering.
+        let age = abs(timestamp - sampleTimestamp)
+        return age <= actionFreshness
     }
 
     private func startTimerIfNeeded(for action: LatchedAction) {

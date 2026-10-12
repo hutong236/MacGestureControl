@@ -21,6 +21,8 @@ struct LeftHoldGestureStateMachine {
     private var missingSince: TimeInterval?
     private var previousTimestamp: TimeInterval?
 
+    var pendingAction: LatchedAction? { candidateAction }
+
     var isEngaged: Bool {
         switch state {
         case .idle: return false
@@ -330,7 +332,8 @@ final class BimanualLatchCoordinator {
         switch action {
         case .scroll: interval = scrollRepeatInterval
         case .zoom: interval = zoomRepeatInterval
-        case .drag: return
+        // A drag must have a watchdog as well or a frozen camera can leave mouseDown stuck.
+        case .drag: interval = zoomRepeatInterval
         }
 
         let timer = DispatchSource.makeTimerSource(queue: outputQueue)

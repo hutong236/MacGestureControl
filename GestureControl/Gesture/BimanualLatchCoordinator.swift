@@ -54,7 +54,7 @@ struct LeftHoldGestureStateMachine {
                 let wasLatched: Bool
                 if case .latched = state { wasLatched = true } else { wasLatched = false }
                 reset()
-                previousTimestamp = timestamp
+                self.previousTimestamp = timestamp
                 return wasLatched ? .release : .none
             }
         }

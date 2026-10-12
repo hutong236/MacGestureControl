@@ -138,6 +138,120 @@ struct LeftHoldGestureStateMachine {
 }
 
 /// Owns the latched continuous output only. Gesture recognition and Hold timing live elsewhere.
+
+/// One-shot shortcuts available only while the left hand is securely holding a
+/// scroll/zoom latch. Right fist = Copy, right open palm = Paste.
+enum BimanualShortcut: Equatable {
+    case copy
+    case paste
+
+    var displayName: String {
+        switch self {
+        case .copy: return "复制 ⌘C"
+        case .paste: return "粘贴 ⌘V"
+        }
+    }
+}
+
+/// Frame-driven, deterministic command gate with explicit neutral-pose rearming.
+/// A candidate must be continuously visible; occlusion never counts as dwell.
+struct BimanualShortcutRecognizer {
+    private let commandDwell: TimeInterval = 0.50
+    private let neutralRearmDwell: TimeInterval = 0.20
+    private let commandCooldown: TimeInterval = 0.75
+    private let maximumObservationGap: TimeInterval = 0.22
+
+    private var armed = false
+    private var neutralSince: TimeInterval?
+    private var candidate: BimanualShortcut?
+    private var candidateSince: TimeInterval?
+    private var lastCommandTime: TimeInterval?
+    private var lastTimestamp: TimeInterval?
+
+    mutating func reset() {
+        armed = false
+        neutralSince = nil
+        candidate = nil
+        candidateSince = nil
+        lastCommandTime = nil
+        lastTimestamp = nil
+    }
+
+    mutating func advance(
+        rightPattern pattern: FingerPattern?,
+        timestamp: TimeInterval,
+        enabled: Bool,
+        latchedAction: LatchedAction?,
+        rightHandConfirmed: Bool,
+        rightDragging: Bool
+    ) -> BimanualShortcut? {
+        guard enabled, rightHandConfirmed,
+              let action = latchedAction, !rightDragging, timestamp.isFinite else {
+            // A missing right hand must never cause a previously armed command to fire.
+            reset()
+            return nil
+        }
+        // MouseDown is owned by the latched drag; no clipboard shortcuts while dragging.
+        if action == .drag { reset(); return nil }
+
+        if let previous = lastTimestamp {
+            guard timestamp >= previous else { return nil }
+            if timestamp - previous > maximumObservationGap {
+                reset()
+            }
+        }
+        lastTimestamp = timestamp
+
+        guard let pattern else {
+            neutralSince = nil
+            candidate = nil
+            candidateSince = nil
+            return nil
+        }
+
+        if pattern.isPointerPose {
+            candidate = nil
+            candidateSince = nil
+            if neutralSince == nil { neutralSince = timestamp }
+            if let neutralSince, timestamp - neutralSince >= neutralRearmDwell {
+                armed = true
+            }
+            return nil
+        }
+
+        neutralSince = nil
+        let command: BimanualShortcut?
+        if pattern.isFistPose {
+            command = .copy
+        } else if pattern.isOpenPalmPose {
+            command = .paste
+        } else {
+            command = nil
+        }
+
+        guard armed, let command else {
+            candidate = nil
+            candidateSince = nil
+            return nil
+        }
+        if candidate != command {
+            candidate = command
+            candidateSince = timestamp
+            return nil
+        }
+        guard let candidateSince, timestamp - candidateSince >= commandDwell else { return nil }
+        if let lastCommandTime, timestamp - lastCommandTime < commandCooldown { return nil }
+
+        // One command per explicit pointer-pose rearm, even if the right hand
+        // stays in the same pose for minutes or switches directly to the other pose.
+        armed = false
+        self.candidate = nil
+        self.candidateSince = nil
+        self.lastCommandTime = timestamp
+        return command
+    }
+}
+
 final class BimanualLatchCoordinator {
     var onScrollDelta: ((Double, Double) -> Void)?
     var onLeftButton: ((Bool) -> Void)?
@@ -191,8 +305,9 @@ final class BimanualLatchCoordinator {
         lock.unlock()
 
         // A locked action is immutable: subsequent right-hand gestures cannot rewrite its direction.
-        if case .scroll = action { return }
-        if action == .drag { return }
+        // Only the latched continuous modality is allowed to repeat.
+        // Pointer movement and compatible click events remain available to the right hand.
+        guard action == nil else { return }
         onScrollDelta?(safeX, safeY)
     }
 
@@ -212,8 +327,7 @@ final class BimanualLatchCoordinator {
         lastZoom = (safeStep, timestamp)
         let action = currentLatchedAction
         lock.unlock()
-        if case .zoom = action { return }
-        if action == .drag { return }
+        guard action == nil else { return }
         onZoomStep?(safeStep)
     }
 

@@ -132,6 +132,12 @@ final class AppController: ObservableObject {
         }
     }
 
+    @Published var bimanualShortcutsEnabled: Bool {
+        didSet {
+            defaults.set(bimanualShortcutsEnabled, forKey: Keys.bimanualShortcutsEnabled)
+        }
+    }
+
     @Published var naturalScrolling: Bool {
         didSet {
             defaults.set(naturalScrolling, forKey: Keys.naturalScrolling)
@@ -180,15 +186,8 @@ final class AppController: ObservableObject {
     // V1.4 physical two-hand roles. Right = operation hand; left = Hold modifier when both exist.
     private var primaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
     private var secondaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
-    private let leftHoldDuration: TimeInterval = 0.30
-    private let leftReleaseDebounce: TimeInterval = 0.08
-    private let leftMissingReleaseDelay: TimeInterval = 0.25
-    private var leftHoldArmed = false
-    private var leftHoldCandidateSince: TimeInterval?
-    private var leftHoldReleaseSince: TimeInterval?
-    private var leftHandMissingSince: TimeInterval?
-    private var leftHoldCandidateAction: LatchedAction?
-    private var leftHoldStateInternal: LeftHoldState = .idle
+    private var leftHoldMachine = LeftHoldGestureStateMachine()
+    private var bimanualShortcutRecognizer = BimanualShortcutRecognizer()
 
     init() {
         let storedDefaults = UserDefaults.standard
@@ -212,6 +211,7 @@ final class AppController: ObservableObject {
         scrollRetractionSuppressionEnabled = storedDefaults.object(forKey: Keys.scrollRetractionSuppressionEnabled) as? Bool ?? true
         // V1.4 keeps the persisted V1.2 key but changes the semantic to left-hand Pinch Hold latching.
         bimanualAssistEnabled = storedDefaults.object(forKey: Keys.bimanualAssistEnabled) as? Bool ?? false
+        bimanualShortcutsEnabled = storedDefaults.object(forKey: Keys.bimanualShortcutsEnabled) as? Bool ?? true
         naturalScrolling = storedDefaults.object(forKey: Keys.naturalScrolling) as? Bool ?? true
         trackingResponsiveness = storedFiniteDouble(
             storedDefaults,
@@ -291,9 +291,14 @@ final class AppController: ObservableObject {
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.isProcessingActive() || action == nil else { return }
+                guard self.latchCoordinator.latchedAction == action else { return }
                 self.bimanualClutchActive = action != nil
                 if let action {
                     self.lastActionText = "🔒 \(self.displayName(for: action))"
+                } else {
+                    // Also handles watchdog release when no camera frames arrive.
+                    self.leftHoldState = .idle
+                    self.updateHUDForInteraction(self.trackpadInteraction)
                 }
             }
         }
@@ -610,10 +615,12 @@ final class AppController: ObservableObject {
         } else {
             latchCoordinator.reset()
             clearLeftHoldTrackingState()
+            bimanualShortcutRecognizer.reset()
         }
         guard isProcessingGenerationCurrent(generation) else { return }
 
         guard let pose = primaryPose else {
+            bimanualShortcutRecognizer.reset()
             let continuityHolding: Bool
             if controlMode == .trackpad {
                 continuityHolding = trackpadEngine.observationMissed(timestamp: timestamp)
@@ -678,6 +685,7 @@ final class AppController: ObservableObject {
                     confidence: pose.confidence
                 )
             )
+            processBimanualShortcut(pose, timestamp: timestamp, generation: generation)
         }
 
         if timestamp - lastUIUpdate > 0.10 {
@@ -754,7 +762,9 @@ final class AppController: ObservableObject {
         } else if poses.count == 1, let only = poses.first {
             if bimanualAssistEnabled,
                only.handedness == .left,
-               primaryRecent {
+               (primaryRecent || leftHoldMachine.isEngaged) {
+                // Do not reassign the held physical left hand as the operator when
+                // the right hand leaves the camera view for more than the tracking window.
                 secondary = only
             } else if bimanualAssistEnabled, primaryRecent, secondaryRecent {
                 let dp = distance(only, primaryHandCenter)
@@ -792,107 +802,108 @@ final class AppController: ObservableObject {
             return
         }
 
-        guard let secondary,
-              secondary.handedness == .left,
-              secondary.confidence >= 0.38,
-              let ratio = secondary.pinchRatio,
-              ratio.isFinite else {
-            handleMissingLeftHand(timestamp: timestamp)
-            return
+        // The output watchdog can release when frames stop arriving entirely. Synchronize
+        // the frame-driven Hold machine on the first subsequent observation.
+        if case .latched = leftHoldMachine.state, latchCoordinator.latchedAction == nil {
+            leftHoldMachine.reset()
+            publishLeftHoldState(.idle, candidateAction: nil)
         }
 
-        leftHandMissingSince = nil
-
-        if ratio >= 0.58 {
-            leftHoldArmed = true
+        let leftRatio: Double?
+        if let secondary,
+           secondary.handedness == .left,
+           secondary.confidence >= 0.38,
+           let ratio = secondary.pinchRatio,
+           ratio.isFinite {
+            leftRatio = ratio
+            latchCoordinator.observeHoldHeartbeat(timestamp: ProcessInfo.processInfo.systemUptime)
+        } else {
+            leftRatio = nil
         }
 
-        switch leftHoldStateInternal {
-        case .idle:
-            leftHoldReleaseSince = nil
-            guard leftHoldArmed, ratio <= 0.32,
-                  let candidate = latchCoordinator.currentLatchableAction(
-                    timestamp: timestamp,
-                    zoomEnabled: twoFingerZoomEnabled
-                  ) else {
+        // A fresh snapshot is captured only when Hold begins, not reselected on completion.
+        let candidate = latchCoordinator.currentLatchableAction(
+            timestamp: timestamp,
+            zoomEnabled: twoFingerZoomEnabled
+        )
+        let previousHoldState = leftHoldMachine.state
+        let transition = leftHoldMachine.advance(
+            leftPinchRatio: leftRatio,
+            timestamp: timestamp,
+            latchableAction: candidate
+        )
+
+        switch transition {
+        case .none:
+            break
+        case let .latch(action):
+            guard latchCoordinator.latch(
+                action,
+                timestamp: timestamp,
+                zoomEnabled: twoFingerZoomEnabled
+            ) else {
+                leftHoldMachine.reset()
+                publishLeftHoldState(.idle, candidateAction: nil)
                 return
             }
-            leftHoldCandidateSince = timestamp
-            leftHoldCandidateAction = candidate
-            publishLeftHoldState(.candidate(progress: 0), candidateAction: candidate)
-
-        case .candidate:
-            if ratio >= 0.48 {
-                cancelLeftHoldCandidate(rearm: ratio >= 0.58)
-                return
-            }
-            guard let since = leftHoldCandidateSince else {
-                cancelLeftHoldCandidate(rearm: false)
-                return
-            }
-            let progress = min(max((timestamp - since) / leftHoldDuration, 0), 1)
-            publishLeftHoldState(.candidate(progress: progress), candidateAction: leftHoldCandidateAction)
-            guard timestamp - since >= leftHoldDuration else { return }
-
-            if latchCoordinator.latchCurrentAction(timestamp: timestamp, zoomEnabled: twoFingerZoomEnabled),
-               let action = latchCoordinator.latchedAction {
-                leftHoldArmed = false
-                leftHoldCandidateSince = nil
-                leftHoldCandidateAction = nil
-                publishLeftHoldState(.latched(action), candidateAction: nil)
-            } else {
-                cancelLeftHoldCandidate(rearm: false)
-            }
-
-        case .latched:
-            if ratio >= 0.48 {
-                if leftHoldReleaseSince == nil { leftHoldReleaseSince = timestamp }
-                if let since = leftHoldReleaseSince,
-                   timestamp - since >= leftReleaseDebounce {
-                    latchCoordinator.release(timestamp: timestamp)
-                    clearLeftHoldTrackingState()
-                    leftHoldArmed = ratio >= 0.58
-                    publishLeftHoldState(.idle, candidateAction: nil)
-                }
-            } else {
-                leftHoldReleaseSince = nil
-            }
+        case .release:
+            latchCoordinator.release(timestamp: timestamp)
         }
-    }
 
-    private func handleMissingLeftHand(timestamp: TimeInterval) {
-        guard leftHoldStateInternal != .idle else {
-            leftHandMissingSince = nil
-            leftHoldArmed = false
-            return
+        if previousHoldState != leftHoldMachine.state || transition != .none {
+            publishLeftHoldState(leftHoldMachine.state, candidateAction: leftHoldMachine.pendingAction)
         }
-        if leftHandMissingSince == nil { leftHandMissingSince = timestamp }
-        guard let since = leftHandMissingSince,
-              timestamp - since >= leftMissingReleaseDelay else { return }
-        latchCoordinator.release(timestamp: timestamp)
-        clearLeftHoldTrackingState()
-        publishLeftHoldState(.idle, candidateAction: nil)
-    }
-
-    private func cancelLeftHoldCandidate(rearm: Bool) {
-        leftHoldCandidateSince = nil
-        leftHoldCandidateAction = nil
-        leftHoldReleaseSince = nil
-        leftHoldArmed = rearm
-        publishLeftHoldState(.idle, candidateAction: nil)
     }
 
     private func clearLeftHoldTrackingState() {
-        leftHoldArmed = false
-        leftHoldCandidateSince = nil
-        leftHoldReleaseSince = nil
-        leftHandMissingSince = nil
-        leftHoldCandidateAction = nil
-        leftHoldStateInternal = .idle
+        leftHoldMachine.reset()
+        bimanualShortcutRecognizer.reset()
+    }
+
+    private func processBimanualShortcut(
+        _ rightPose: HandPoseResult,
+        timestamp: TimeInterval,
+        generation: UInt64
+    ) {
+        guard isProcessingGenerationCurrent(generation) else { return }
+        let latchedAction = latchCoordinator.latchedAction
+        let shortcut = bimanualShortcutRecognizer.advance(
+            rightPattern: rightPose.fingerPattern,
+            timestamp: timestamp,
+            enabled: bimanualAssistEnabled && bimanualShortcutsEnabled,
+            latchedAction: latchedAction,
+            rightHandConfirmed: rightPose.handedness == .right && rightPose.confidence >= 0.42,
+            rightDragging: trackpadInteraction == .dragging
+        )
+        guard let shortcut, let latchedAction,
+              isProcessingGenerationCurrent(generation),
+              PermissionManager.postEventAuthorized else { return }
+
+        // Copy and Paste are one-shot keyboard shortcuts and cannot outlive the
+        // processing epoch. KeyboardController handles queued event cancellation.
+        switch shortcut {
+        case .copy:
+            keyboard.send(keyCode: 8, flags: .maskCommand) // C
+        case .paste:
+            keyboard.send(keyCode: 9, flags: .maskCommand) // V
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isProcessingGenerationCurrent(generation),
+                  self.latchCoordinator.latchedAction == latchedAction else { return }
+            self.lastActionText = "🔒 \(shortcut.displayName)"
+            self.hudState = GestureHUDState(
+                mode: .latched,
+                leftHandText: "Left: HOLD",
+                rightHandText: "Right: \(shortcut.displayName)",
+                actionText: "\(self.displayName(for: latchedAction)) · \(shortcut.displayName)",
+                holdProgress: 1,
+                isLocked: true
+            )
+        }
     }
 
     private func publishLeftHoldState(_ state: LeftHoldState, candidateAction: LatchedAction?) {
-        leftHoldStateInternal = state
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.leftHoldState = state
@@ -1121,6 +1132,7 @@ final class AppController: ObservableObject {
         static let twoFingerZoomEnabled = "trackpad.twoFingerZoomEnabled.v1"
         static let scrollRetractionSuppressionEnabled = "trackpad.scrollRetractionSuppression.v1"
         static let bimanualAssistEnabled = "trackpad.bimanualAssistEnabled.v1"
+        static let bimanualShortcutsEnabled = "trackpad.bimanualShortcutsEnabled.v1"
         static let trackingResponsiveness = "trackpad.trackingResponsiveness"
         static let precisionAssist = "trackpad.precisionAssist"
         static let personalPalmScale = "trackpad.personalPalmScale.v1"

@@ -46,7 +46,18 @@ struct LeftHoldGestureStateMachine {
         latchableAction: LatchedAction?
     ) -> Transition {
         guard timestamp.isFinite else { return .none }
-        if let previousTimestamp, timestamp < previousTimestamp { return .none }
+        if let previousTimestamp {
+            if timestamp < previousTimestamp { return .none }
+            if timestamp - previousTimestamp >= leftMissingReleaseDelay && isEngaged {
+                // Even when the next frame sees the hand again, a stalled camera cannot
+                // retroactively prove that the left Hold stayed continuously engaged.
+                let wasLatched: Bool
+                if case .latched = state { wasLatched = true } else { wasLatched = false }
+                reset()
+                previousTimestamp = timestamp
+                return wasLatched ? .release : .none
+            }
+        }
         previousTimestamp = timestamp
 
         guard let ratio, ratio.isFinite else {

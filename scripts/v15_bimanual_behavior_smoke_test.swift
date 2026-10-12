@@ -146,17 +146,14 @@ func run(_ arguments: [String]) throws {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = arguments
-    let combined = Pipe()
-    process.standardOutput = combined
-    process.standardError = combined
+    // Forward output directly so a compiler diagnostic is visible even on CI failures.
+    process.standardOutput = FileHandle.standardOutput
+    process.standardError = FileHandle.standardError
     try process.run()
-    let output = combined.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
-    if let decoded = String(data: output, encoding: .utf8), !decoded.isEmpty {
-        print(decoded, terminator: decoded.hasSuffix("\n") ? "" : "\n")
-    }
     guard process.terminationStatus == 0 else {
-        fatalError("\(arguments.first ?? "process") failed (exit \(process.terminationStatus))")
+        FileHandle.standardError.write(Data("Nested regression process failed: \(process.terminationStatus)\n".utf8))
+        exit(1)
     }
 }
 

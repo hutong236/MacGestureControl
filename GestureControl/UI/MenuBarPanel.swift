@@ -233,6 +233,7 @@ struct MenuBarPanel: View {
                 trackpadGuideRow("square.3.layers.3d", "三/四指左右滑", "切换桌面 / 全屏空间")
                 trackpadGuideRow("rectangle.3.group", "三/四指上 / 下滑", "Mission Control / App Exposé")
                 trackpadGuideRow("hand.pinch.fill", "左手拇指 + 食指 Hold", "保持 300ms 锁定当前右手连续操作")
+                trackpadGuideRow("hand.raised.fingers.spread", "锁定后右手握拳 / 张开手掌", "保持 500ms 复制 / 粘贴，单指停留 200ms 后可再次触发")
             }
             .padding(10)
             .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
@@ -293,6 +294,12 @@ struct MenuBarPanel: View {
                  : "双手出现时右手负责操作；左手拇指 + 食指捏合保持 300ms 可锁定滚动、拖拽或已启用的缩放。")
                 .font(.caption2)
                 .foregroundStyle(controller.bimanualClutchActive ? Color.orange : Color.secondary)
+
+            Toggle("双手复制 / 粘贴快捷手势", isOn: $controller.bimanualShortcutsEnabled)
+                .disabled(!controller.bimanualAssistEnabled)
+            Text("锁定滚动或缩放后，右手握拳保持 500ms 发送 ⌘C；张开手掌保持 500ms 发送 ⌘V。首次及每次操作后，需右手单指姿态保持 200ms 重新准备；锁定拖拽时不触发。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             Toggle("显示透明 HUD", isOn: $hudEnabled)
                 .onChange(of: hudEnabled) { enabled in
@@ -370,7 +377,7 @@ struct MenuBarPanel: View {
                     .controlSize(.small)
             }
 
-            Text("V1.4 在实时意图引擎上加入双手锁存：右手继续负责主操作，左手 Pinch Hold 300ms 可锁定连续滚动/拖拽/缩放；透明 HUD 同步显示当前状态。")
+            Text("V1.5 双手联动：左手 Hold 锁定连续滚动/拖拽/缩放，右手通过防抖握拳/张掌触发复制/粘贴；安全重置与透明 HUD 同步工作。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

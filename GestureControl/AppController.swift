@@ -849,7 +849,6 @@ final class AppController: ObservableObject {
     }
 
     private func publishLeftHoldState(_ state: LeftHoldState, candidateAction: LatchedAction?) {
-        leftHoldStateInternal = state
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.leftHoldState = state

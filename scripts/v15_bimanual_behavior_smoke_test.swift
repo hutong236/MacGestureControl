@@ -2,6 +2,18 @@ import Foundation
 
 /// Compiles and executes the actual production coordinator / Hold FSM with small model stubs.
 /// This is a behavioral regression test, rather than a source-string-only smoke check.
+// Verify the real AppController wiring, keyboard event dispatch, and user toggle.
+let appText = try String(contentsOfFile: "GestureControl/AppController.swift", encoding: .utf8)
+let menuText = try String(contentsOfFile: "GestureControl/UI/MenuBarPanel.swift", encoding: .utf8)
+guard appText.contains("processBimanualShortcut(pose, timestamp: timestamp, generation: generation)"),
+      appText.contains("keyboard.send(keyCode: 8, flags: .maskCommand)"),
+      appText.contains("keyboard.send(keyCode: 9, flags: .maskCommand)"),
+      appText.contains("rightPose.handedness == .right"),
+      appText.contains("trackpad.bimanualShortcutsEnabled.v1"),
+      menuText.contains("双手复制 / 粘贴快捷手势") else {
+    fatalError("Bimanual shortcut integration wiring incomplete")
+}
+
 let sourcePath = "GestureControl/Gesture/BimanualLatchCoordinator.swift"
 guard let coordinatorSource = try? String(contentsOfFile: sourcePath, encoding: .utf8) else {
     fatalError("Missing \(sourcePath)")
@@ -21,6 +33,16 @@ enum LeftHoldState: Equatable {
     case idle
     case candidate(progress: Double)
     case latched(LatchedAction)
+}
+struct FingerPattern: Equatable {
+    let thumb: Bool
+    let index: Bool
+    let middle: Bool
+    let ring: Bool
+    let little: Bool
+    var isPointerPose: Bool { index && !middle && !ring && !little }
+    var isFistPose: Bool { !thumb && !index && !middle && !ring && !little }
+    var isOpenPalmPose: Bool { index && middle && ring && little }
 }
 
 \(coordinatorSource)
@@ -73,6 +95,63 @@ require(hold.advance(leftPinchRatio: nil, timestamp: 3.76, latchableAction: nil)
 hold.reset()
 hold.reset()
 require(hold.state == .idle, "Repeated reset is not idempotent")
+
+let pointer = FingerPattern(thumb: false, index: true, middle: false, ring: false, little: false)
+let fist = FingerPattern(thumb: false, index: false, middle: false, ring: false, little: false)
+let palm = FingerPattern(thumb: true, index: true, middle: true, ring: true, little: true)
+var shortcuts = BimanualShortcutRecognizer()
+func observe(_ pose: FingerPattern?, _ at: Double,
+             enabled: Bool = true, right: Bool = true,
+             latched: LatchedAction? = .scroll(deltaX: 0, deltaY: 3),
+             dragging: Bool = false) -> BimanualShortcut? {
+    shortcuts.advance(rightPattern: pose, timestamp: at, enabled: enabled,
+                      latchedAction: latched, rightHandConfirmed: right, rightDragging: dragging)
+}
+require(observe(pointer, 0.0, enabled: false) == nil, "Disabled shortcuts fired")
+require(observe(fist, 0.1) == nil, "Fist must require explicit neutral rearm")
+require(observe(pointer, 0.2) == nil, "Neutral arming must not issue shortcut")
+require(observe(pointer, 0.42) == nil, "Neutral arming must not issue shortcut")
+require(observe(fist, 0.5) == nil, "Copy fired before confirmation")
+require(observe(fist, 0.6) == nil, "Copy fired before 500ms")
+require(observe(fist, 0.7) == nil, "Copy fired before 500ms")
+require(observe(fist, 0.8) == nil, "Copy fired before 500ms")
+require(observe(fist, 0.9) == nil, "Copy fired before 500ms")
+require(observe(fist, 1.02) == .copy, "500ms fist did not copy")
+require(observe(fist, 1.10) == nil, "Held fist repeated Command-C")
+require(observe(palm, 1.20) == nil, "Direct fist to palm must not paste")
+require(observe(palm, 1.30) == nil, "Direct fist to palm must stay disarmed")
+require(observe(pointer, 1.40) == nil, "Return pointer must not paste")
+require(observe(pointer, 1.61) == nil, "Rearm dwell must not paste")
+require(observe(palm, 1.72) == nil, "Paste candidate begins")
+require(observe(palm, 1.82) == nil, "Premature paste")
+require(observe(palm, 1.92) == nil, "Premature paste")
+require(observe(palm, 2.02) == nil, "Premature paste")
+require(observe(palm, 2.13) == nil, "Premature paste")
+require(observe(palm, 2.24) == .paste, "500ms palm did not paste")
+require(observe(palm, 2.34) == nil, "Held palm repeated Paste")
+
+shortcuts.reset()
+require(observe(pointer, 3.0) == nil, "Reset must require neutral")
+require(observe(pointer, 3.21) == nil, "Neutral completed")
+require(observe(fist, 3.30) == nil, "Candidate started")
+require(observe(fist, 3.42) == nil, "Premature candidate")
+require(observe(nil, 3.52) == nil, "Missing pattern cannot copy")
+require(observe(fist, 3.61) == nil, "Occlusion should reset candidate")
+require(observe(fist, 3.72) == nil, "Occlusion should not accumulate")
+require(observe(fist, 3.84) == nil, "Occlusion should not accumulate")
+require(observe(fist, 4.02) == nil, "Occlusion should not accumulate")
+require(observe(fist, 4.13) == .copy, "Reacquired fist should require new dwell")
+
+shortcuts.reset()
+require(observe(pointer, 5.0, right: false) == nil, "Unknown right hand must be rejected")
+require(observe(fist, 5.15, right: false) == nil, "Unknown right hand must never issue copy")
+require(observe(pointer, 5.30) == nil, "Arming restart")
+require(observe(pointer, 5.52) == nil, "Arming restart")
+require(observe(fist, 5.60, latched: .drag) == nil, "Latched drag cannot send clipboard keys")
+require(observe(fist, 5.70, dragging: true) == nil, "Active right mouse drag cannot copy")
+require(observe(fist, 5.80, latched: nil) == nil, "No left Hold cannot issue keys")
+shortcuts.reset()
+print("PASS: V1.5 shortcut dwell/rearm, anti-repeat, missing-hand and drag gate")
 
 let coordinator = BimanualLatchCoordinator()
 let callbackLock = NSLock()

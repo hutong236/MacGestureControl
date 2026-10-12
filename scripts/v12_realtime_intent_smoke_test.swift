@@ -140,9 +140,11 @@ func read(_ path: String) -> String {
     return text
 }
 let appSource = read("GestureControl/AppController.swift")
-precondition(appSource.contains("leftHoldDuration: TimeInterval = 0.30"))
-precondition(appSource.contains("leftReleaseDebounce: TimeInterval = 0.08"))
-precondition(appSource.contains("leftMissingReleaseDelay: TimeInterval = 0.25"))
+let holdSource = read("GestureControl/Gesture/BimanualLatchCoordinator.swift")
+precondition(holdSource.contains("leftHoldDuration: TimeInterval = 0.30"))
+precondition(holdSource.contains("leftReleaseDebounce: TimeInterval = 0.08"))
+precondition(holdSource.contains("leftMissingReleaseDelay: TimeInterval = 0.25"))
+precondition(appSource.contains("LeftHoldGestureStateMachine()"))
 precondition(!appSource.contains("trackpadEngine.setExternalClutch"))
 precondition(!appSource.contains("trackpad.rightClick()"))
 print("PASS: legacy bimanual clutch/right-click mapping is retired")

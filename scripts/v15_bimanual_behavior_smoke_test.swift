@@ -64,6 +64,7 @@ require(hold.state == .idle, "Re-entry became candidate without open-arm")
 hold.reset()
 _ = hold.advance(leftPinchRatio: 0.62, timestamp: 3.0, latchableAction: nil)
 _ = hold.advance(leftPinchRatio: 0.2, timestamp: 3.1, latchableAction: scroll)
+_ = hold.advance(leftPinchRatio: 0.2, timestamp: 3.24, latchableAction: nil)
 require(hold.advance(leftPinchRatio: 0.2, timestamp: 3.41, latchableAction: nil) == .latch(scroll),
         "Expected second latch")
 _ = hold.advance(leftPinchRatio: nil, timestamp: 3.5, latchableAction: nil)

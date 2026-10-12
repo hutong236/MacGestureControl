@@ -180,15 +180,7 @@ final class AppController: ObservableObject {
     // V1.4 physical two-hand roles. Right = operation hand; left = Hold modifier when both exist.
     private var primaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
     private var secondaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
-    private let leftHoldDuration: TimeInterval = 0.30
-    private let leftReleaseDebounce: TimeInterval = 0.08
-    private let leftMissingReleaseDelay: TimeInterval = 0.25
-    private var leftHoldArmed = false
-    private var leftHoldCandidateSince: TimeInterval?
-    private var leftHoldReleaseSince: TimeInterval?
-    private var leftHandMissingSince: TimeInterval?
-    private var leftHoldCandidateAction: LatchedAction?
-    private var leftHoldStateInternal: LeftHoldState = .idle
+    private var leftHoldMachine = LeftHoldGestureStateMachine()
 
     init() {
         let storedDefaults = UserDefaults.standard
@@ -294,6 +286,10 @@ final class AppController: ObservableObject {
                 self.bimanualClutchActive = action != nil
                 if let action {
                     self.lastActionText = "🔒 \(self.displayName(for: action))"
+                } else {
+                    // Also handles watchdog release when no camera frames arrive.
+                    self.leftHoldState = .idle
+                    self.updateHUDForInteraction(self.trackpadInteraction)
                 }
             }
         }
@@ -754,7 +750,9 @@ final class AppController: ObservableObject {
         } else if poses.count == 1, let only = poses.first {
             if bimanualAssistEnabled,
                only.handedness == .left,
-               primaryRecent {
+               (primaryRecent || leftHoldMachine.isEngaged) {
+                // Do not reassign the held physical left hand as the operator when
+                // the right hand leaves the camera view for more than the tracking window.
                 secondary = only
             } else if bimanualAssistEnabled, primaryRecent, secondaryRecent {
                 let dp = distance(only, primaryHandCenter)
@@ -792,103 +790,58 @@ final class AppController: ObservableObject {
             return
         }
 
-        guard let secondary,
-              secondary.handedness == .left,
-              secondary.confidence >= 0.38,
-              let ratio = secondary.pinchRatio,
-              ratio.isFinite else {
-            handleMissingLeftHand(timestamp: timestamp)
-            return
+        // The output watchdog can release when frames stop arriving entirely. Synchronize
+        // the frame-driven Hold machine on the first subsequent observation.
+        if case .latched = leftHoldMachine.state, latchCoordinator.latchedAction == nil {
+            leftHoldMachine.reset()
+            publishLeftHoldState(.idle, candidateAction: nil)
         }
 
-        leftHandMissingSince = nil
-
-        if ratio >= 0.58 {
-            leftHoldArmed = true
+        let leftRatio: Double?
+        if let secondary,
+           secondary.handedness == .left,
+           secondary.confidence >= 0.38,
+           let ratio = secondary.pinchRatio,
+           ratio.isFinite {
+            leftRatio = ratio
+            latchCoordinator.observeHoldHeartbeat(timestamp: ProcessInfo.processInfo.systemUptime)
+        } else {
+            leftRatio = nil
         }
 
-        switch leftHoldStateInternal {
-        case .idle:
-            leftHoldReleaseSince = nil
-            guard leftHoldArmed, ratio <= 0.32,
-                  let candidate = latchCoordinator.currentLatchableAction(
-                    timestamp: timestamp,
-                    zoomEnabled: twoFingerZoomEnabled
-                  ) else {
+        // A fresh snapshot is captured only when Hold begins, not reselected on completion.
+        let candidate = latchCoordinator.currentLatchableAction(
+            timestamp: timestamp,
+            zoomEnabled: twoFingerZoomEnabled
+        )
+        let transition = leftHoldMachine.advance(
+            leftPinchRatio: leftRatio,
+            timestamp: timestamp,
+            latchableAction: candidate
+        )
+
+        switch transition {
+        case .none:
+            break
+        case let .latch(action):
+            guard latchCoordinator.latch(
+                action,
+                timestamp: timestamp,
+                zoomEnabled: twoFingerZoomEnabled
+            ) else {
+                leftHoldMachine.reset()
+                publishLeftHoldState(.idle, candidateAction: nil)
                 return
             }
-            leftHoldCandidateSince = timestamp
-            leftHoldCandidateAction = candidate
-            publishLeftHoldState(.candidate(progress: 0), candidateAction: candidate)
-
-        case .candidate:
-            if ratio >= 0.48 {
-                cancelLeftHoldCandidate(rearm: ratio >= 0.58)
-                return
-            }
-            guard let since = leftHoldCandidateSince else {
-                cancelLeftHoldCandidate(rearm: false)
-                return
-            }
-            let progress = min(max((timestamp - since) / leftHoldDuration, 0), 1)
-            publishLeftHoldState(.candidate(progress: progress), candidateAction: leftHoldCandidateAction)
-            guard timestamp - since >= leftHoldDuration else { return }
-
-            if latchCoordinator.latchCurrentAction(timestamp: timestamp, zoomEnabled: twoFingerZoomEnabled),
-               let action = latchCoordinator.latchedAction {
-                leftHoldArmed = false
-                leftHoldCandidateSince = nil
-                leftHoldCandidateAction = nil
-                publishLeftHoldState(.latched(action), candidateAction: nil)
-            } else {
-                cancelLeftHoldCandidate(rearm: false)
-            }
-
-        case .latched:
-            if ratio >= 0.48 {
-                if leftHoldReleaseSince == nil { leftHoldReleaseSince = timestamp }
-                if let since = leftHoldReleaseSince,
-                   timestamp - since >= leftReleaseDebounce {
-                    latchCoordinator.release(timestamp: timestamp)
-                    clearLeftHoldTrackingState()
-                    leftHoldArmed = ratio >= 0.58
-                    publishLeftHoldState(.idle, candidateAction: nil)
-                }
-            } else {
-                leftHoldReleaseSince = nil
-            }
+        case .release:
+            latchCoordinator.release(timestamp: timestamp)
         }
-    }
 
-    private func handleMissingLeftHand(timestamp: TimeInterval) {
-        guard leftHoldStateInternal != .idle else {
-            leftHandMissingSince = nil
-            leftHoldArmed = false
-            return
-        }
-        if leftHandMissingSince == nil { leftHandMissingSince = timestamp }
-        guard let since = leftHandMissingSince,
-              timestamp - since >= leftMissingReleaseDelay else { return }
-        latchCoordinator.release(timestamp: timestamp)
-        clearLeftHoldTrackingState()
-        publishLeftHoldState(.idle, candidateAction: nil)
-    }
-
-    private func cancelLeftHoldCandidate(rearm: Bool) {
-        leftHoldCandidateSince = nil
-        leftHoldCandidateAction = nil
-        leftHoldReleaseSince = nil
-        leftHoldArmed = rearm
-        publishLeftHoldState(.idle, candidateAction: nil)
+        publishLeftHoldState(leftHoldMachine.state, candidateAction: leftHoldMachine.pendingAction)
     }
 
     private func clearLeftHoldTrackingState() {
-        leftHoldArmed = false
-        leftHoldCandidateSince = nil
-        leftHoldReleaseSince = nil
-        leftHandMissingSince = nil
-        leftHoldCandidateAction = nil
-        leftHoldStateInternal = .idle
+        leftHoldMachine.reset()
     }
 
     private func publishLeftHoldState(_ state: LeftHoldState, candidateAction: LatchedAction?) {

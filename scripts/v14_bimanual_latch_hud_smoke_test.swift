@@ -54,7 +54,7 @@ require(coordinator.contains("onLeftButton?(false)"), "Latched drag final mouse-
 require(coordinator.contains("holdHeartbeatTimeout"), "Camera-stall output watchdog missing")
 require(coordinator.contains("func latch(_ action: LatchedAction"), "Snapshot-specific latch commit API missing")
 require(coordinator.contains("guard let button = lastLeftButton, button.down else { return nil }"), "Ongoing drag must remain latchable after its initial mouseDown ages past 200 ms")
-require(coordinator.contains("if action == .drag { return }"), "Latched drag must suppress conflicting scroll and zoom")
+require(coordinator.contains("guard action == nil else { return }"), "Latched actions must suppress conflicting scroll and zoom")
 require(coordinator.contains("let suppress = currentLatchedAction == .drag"), "Latched drag must suppress conflicting mouse transitions")
 require(coordinator.contains("case .drag: interval = zoomRepeatInterval"), "Latched drag must run watchdog")
 require(

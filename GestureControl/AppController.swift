@@ -132,6 +132,12 @@ final class AppController: ObservableObject {
         }
     }
 
+    @Published var bimanualShortcutsEnabled: Bool {
+        didSet {
+            defaults.set(bimanualShortcutsEnabled, forKey: Keys.bimanualShortcutsEnabled)
+        }
+    }
+
     @Published var naturalScrolling: Bool {
         didSet {
             defaults.set(naturalScrolling, forKey: Keys.naturalScrolling)
@@ -181,6 +187,7 @@ final class AppController: ObservableObject {
     private var primaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
     private var secondaryHandCenter: (x: Double, y: Double, timestamp: TimeInterval)?
     private var leftHoldMachine = LeftHoldGestureStateMachine()
+    private var bimanualShortcutRecognizer = BimanualShortcutRecognizer()
 
     init() {
         let storedDefaults = UserDefaults.standard
@@ -204,6 +211,7 @@ final class AppController: ObservableObject {
         scrollRetractionSuppressionEnabled = storedDefaults.object(forKey: Keys.scrollRetractionSuppressionEnabled) as? Bool ?? true
         // V1.4 keeps the persisted V1.2 key but changes the semantic to left-hand Pinch Hold latching.
         bimanualAssistEnabled = storedDefaults.object(forKey: Keys.bimanualAssistEnabled) as? Bool ?? false
+        bimanualShortcutsEnabled = storedDefaults.object(forKey: Keys.bimanualShortcutsEnabled) as? Bool ?? true
         naturalScrolling = storedDefaults.object(forKey: Keys.naturalScrolling) as? Bool ?? true
         trackingResponsiveness = storedFiniteDouble(
             storedDefaults,
@@ -607,10 +615,12 @@ final class AppController: ObservableObject {
         } else {
             latchCoordinator.reset()
             clearLeftHoldTrackingState()
+            bimanualShortcutRecognizer.reset()
         }
         guard isProcessingGenerationCurrent(generation) else { return }
 
         guard let pose = primaryPose else {
+            bimanualShortcutRecognizer.reset()
             let continuityHolding: Bool
             if controlMode == .trackpad {
                 continuityHolding = trackpadEngine.observationMissed(timestamp: timestamp)
@@ -675,6 +685,7 @@ final class AppController: ObservableObject {
                     confidence: pose.confidence
                 )
             )
+            processBimanualShortcut(pose, timestamp: timestamp, generation: generation)
         }
 
         if timestamp - lastUIUpdate > 0.10 {
@@ -846,6 +857,50 @@ final class AppController: ObservableObject {
 
     private func clearLeftHoldTrackingState() {
         leftHoldMachine.reset()
+        bimanualShortcutRecognizer.reset()
+    }
+
+    private func processBimanualShortcut(
+        _ rightPose: HandPoseResult,
+        timestamp: TimeInterval,
+        generation: UInt64
+    ) {
+        guard isProcessingGenerationCurrent(generation) else { return }
+        let latchedAction = latchCoordinator.latchedAction
+        let shortcut = bimanualShortcutRecognizer.advance(
+            rightPattern: rightPose.fingerPattern,
+            timestamp: timestamp,
+            enabled: bimanualAssistEnabled && bimanualShortcutsEnabled,
+            latchedAction: latchedAction,
+            rightHandConfirmed: rightPose.handedness == .right && rightPose.confidence >= 0.42,
+            rightDragging: trackpadInteraction == .dragging
+        )
+        guard let shortcut, let latchedAction,
+              isProcessingGenerationCurrent(generation),
+              PermissionManager.postEventAuthorized else { return }
+
+        // Copy and Paste are one-shot keyboard shortcuts and cannot outlive the
+        // processing epoch. KeyboardController handles queued event cancellation.
+        switch shortcut {
+        case .copy:
+            keyboard.send(keyCode: 8, flags: .maskCommand) // C
+        case .paste:
+            keyboard.send(keyCode: 9, flags: .maskCommand) // V
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isProcessingGenerationCurrent(generation),
+                  self.latchCoordinator.latchedAction == latchedAction else { return }
+            self.lastActionText = "🔒 \(shortcut.displayName)"
+            self.hudState = GestureHUDState(
+                mode: .latched,
+                leftHandText: "Left: HOLD",
+                rightHandText: "Right: \(shortcut.displayName)",
+                actionText: "\(self.displayName(for: latchedAction)) · \(shortcut.displayName)",
+                holdProgress: 1,
+                isLocked: true
+            )
+        }
     }
 
     private func publishLeftHoldState(_ state: LeftHoldState, candidateAction: LatchedAction?) {
@@ -1077,6 +1132,7 @@ final class AppController: ObservableObject {
         static let twoFingerZoomEnabled = "trackpad.twoFingerZoomEnabled.v1"
         static let scrollRetractionSuppressionEnabled = "trackpad.scrollRetractionSuppression.v1"
         static let bimanualAssistEnabled = "trackpad.bimanualAssistEnabled.v1"
+        static let bimanualShortcutsEnabled = "trackpad.bimanualShortcutsEnabled.v1"
         static let trackingResponsiveness = "trackpad.trackingResponsiveness"
         static let precisionAssist = "trackpad.precisionAssist"
         static let personalPalmScale = "trackpad.personalPalmScale.v1"

@@ -283,6 +283,7 @@ final class AppController: ObservableObject {
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.isProcessingActive() || action == nil else { return }
+                guard self.latchCoordinator.latchedAction == action else { return }
                 self.bimanualClutchActive = action != nil
                 if let action {
                     self.lastActionText = "🔒 \(self.displayName(for: action))"
@@ -814,6 +815,7 @@ final class AppController: ObservableObject {
             timestamp: timestamp,
             zoomEnabled: twoFingerZoomEnabled
         )
+        let previousHoldState = leftHoldMachine.state
         let transition = leftHoldMachine.advance(
             leftPinchRatio: leftRatio,
             timestamp: timestamp,
@@ -837,7 +839,9 @@ final class AppController: ObservableObject {
             latchCoordinator.release(timestamp: timestamp)
         }
 
-        publishLeftHoldState(leftHoldMachine.state, candidateAction: leftHoldMachine.pendingAction)
+        if previousHoldState != leftHoldMachine.state || transition != .none {
+            publishLeftHoldState(leftHoldMachine.state, candidateAction: leftHoldMachine.pendingAction)
+        }
     }
 
     private func clearLeftHoldTrackingState() {

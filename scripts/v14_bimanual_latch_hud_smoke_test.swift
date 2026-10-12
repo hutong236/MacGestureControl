@@ -51,11 +51,12 @@ require(coordinator.contains("1.0 / 60.0"), "60 Hz latched scroll cadence missin
 require(coordinator.contains("0.20"), "200 ms action freshness bound missing")
 require(coordinator.contains("zoomRepeatInterval"), "Bounded zoom repeat interval missing")
 require(coordinator.contains("onLeftButton?(false)"), "Latched drag final mouse-up missing")
+require(coordinator.contains("holdHeartbeatTimeout"), "Camera-stall output watchdog missing")
+require(coordinator.contains("func latch(_ action: LatchedAction"), "Snapshot-specific latch commit API missing")
 require(coordinator.contains("guard let button = lastLeftButton, button.down else { return nil }"), "Ongoing drag must remain latchable after its initial mouseDown ages past 200 ms")
-require(
-    occurrences(of: "currentLatchedAction == .drag", in: coordinator) >= 3,
-    "Latched drag must suppress conflicting mouse-up, scroll, and zoom output"
-)
+require(coordinator.contains("if action == .drag { return }"), "Latched drag must suppress conflicting scroll and zoom")
+require(coordinator.contains("let suppress = currentLatchedAction == .drag"), "Latched drag must suppress conflicting mouse transitions")
+require(coordinator.contains("case .drag: interval = zoomRepeatInterval"), "Latched drag must run watchdog")
 require(
     coordinator.contains("let age = abs(timestamp - sampleTimestamp)"),
     "Freshness check must tolerate bounded Vision/output timestamp skew"
@@ -63,19 +64,22 @@ require(
 print("PASS: V1.4 latch coordinator source invariants")
 
 let app = read("GestureControl/AppController.swift")
-require(app.contains("let leftHoldDuration: TimeInterval = 0.30"), "300 ms left Hold threshold missing")
-require(app.contains("let leftReleaseDebounce: TimeInterval = 0.08"), "80 ms Hold release debounce missing")
-require(app.contains("let leftMissingReleaseDelay: TimeInterval = 0.25"), "250 ms missing-left safety release missing")
-require(app.contains("ratio >= 0.58"), "Left Hold arm threshold missing")
-require(app.contains("ratio <= 0.32"), "Left Hold close threshold missing")
-require(app.contains("ratio >= 0.48"), "Left Hold release threshold missing")
+require(coordinator.contains("let leftHoldDuration: TimeInterval = 0.30"), "300 ms left Hold threshold missing")
+require(coordinator.contains("let leftReleaseDebounce: TimeInterval = 0.08"), "80 ms Hold release debounce missing")
+require(coordinator.contains("let leftMissingReleaseDelay: TimeInterval = 0.25"), "250 ms missing-left safety release missing")
+require(coordinator.contains("ratio >= 0.58"), "Left Hold arm threshold missing")
+require(coordinator.contains("ratio <= 0.32"), "Left Hold close threshold missing")
+require(coordinator.contains("ratio >= 0.48"), "Left Hold release threshold missing")
+require(app.contains("LeftHoldGestureStateMachine()"), "App must use extracted pure Hold state machine")
 require(app.contains("pose.handedness == .right"), "Physical right-hand primary routing missing")
 require(app.contains("pose.handedness == .left"), "Physical left-hand modifier routing missing")
 require(app.contains("latchCoordinator.observeScroll"), "Scroll output is not routed through latch coordinator")
 require(app.contains("latchCoordinator.observeLeftButton"), "Drag output is not routed through latch coordinator")
 require(app.contains("latchCoordinator.observeZoomStep"), "Zoom output is not routed through latch coordinator")
 require(app.contains("latchCoordinator.reset()"), "Latch cleanup missing")
-require(app.contains("leftHandMissingSince = nil\n            leftHoldArmed = false\n            return"), "Idle left-hand loss must clear Hold arming before re-entry")
+require(app.contains("leftHoldMachine.isEngaged"), "Left-hand role must survive right-hand disappearance")
+require(app.contains("observeHoldHeartbeat"), "Left presence must refresh watchdog")
+require(coordinator.contains("isArmed = false\n            missingSince = nil"), "Idle left-hand loss must disarm Hold")
 require(!app.contains("辅助手张开"), "Retired open-palm clutch mapping still present")
 require(!app.contains("辅助手捏合 → 右键"), "Retired secondary-pinch right-click mapping still present")
 require(!app.contains("trackpad.rightClick()"), "Secondary pinch must no longer post right click")

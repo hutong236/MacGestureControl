@@ -1,4 +1,4 @@
-# Gesture Control for macOS V1.5 — 双手协同控制
+# Gesture Control for macOS V1.5.0 — 双手协同控制
 
 ## V1.5：左手锁定 + 右手连续操作 / 复制 / 粘贴
 
